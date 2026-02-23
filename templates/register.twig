@@ -1,0 +1,57 @@
+{% extends "layout.twig" %}
+
+{% block title %}Register - {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="min-h-screen flex items-center justify-center gradient-bg py-12 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-md w-full space-y-8">
+        <div>
+            <div class="flex justify-center">
+                <i class="fas fa-user-plus text-white text-6xl"></i>
+            </div>
+            <h2 class="mt-6 text-center text-3xl font-extrabold text-white">
+                Create Account
+            </h2>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow-xl p-8">
+            {% if error %}
+            <div class="mb-4 bg-red-50 border border-red-400 text-red-700 px-4 py-3 rounded relative">
+                {{ error }}
+            </div>
+            {% endif %}
+
+            <form class="space-y-6" method="POST" action="/register">
+                <div>
+                    <label for="name" class="block text-sm font-medium text-gray-700">Full Name</label>
+                    <input id="name" name="name" type="text" required
+                           class="mt-1 appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500">
+                </div>
+
+                <div>
+                    <label for="email" class="block text-sm font-medium text-gray-700">Email</label>
+                    <input id="email" name="email" type="email" required
+                           class="mt-1 appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500">
+                </div>
+
+                <div>
+                    <label for="password" class="block text-sm font-medium text-gray-700">Password</label>
+                    <input id="password" name="password" type="password" required
+                           class="mt-1 appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500">
+                    <p class="mt-1 text-sm text-gray-500">Must be at least 6 characters</p>
+                </div>
+
+                <button type="submit" class="w-full gradient-bg text-white py-2 px-4 rounded-md hover:opacity-90">
+                    Register
+                </button>
+
+                <div class="text-center text-sm">
+                    <a href="/login" class="text-purple-600 hover:text-purple-500">
+                        Already have an account? Sign in
+                    </a>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

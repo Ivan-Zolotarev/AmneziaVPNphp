@@ -1,0 +1,57 @@
+{% extends "layout.twig" %}
+{% block title %}Deploy {{ server.name }}{% endblock %}
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-8">
+  <h1 class="text-2xl font-bold mb-6">Deploying: {{ server.name }}</h1>
+  <div id="deployLog" class="bg-gray-900 text-green-400 p-4 rounded font-mono text-sm h-96 overflow-y-auto mb-4">
+    <div>Ready to deploy...</div>
+  </div>
+  <button id="deployBtn" onclick="deploy()" class="gradient-bg text-white px-6 py-2 rounded hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+    <span id="btnText">Start Deployment</span>
+    <i id="btnSpinner" class="fas fa-spinner fa-spin ml-2 hidden"></i>
+  </button>
+</div>
+<script>
+function deploy() {
+  const btn = document.getElementById('deployBtn');
+  const btnText = document.getElementById('btnText');
+  const btnSpinner = document.getElementById('btnSpinner');
+  const log = document.getElementById('deployLog');
+  
+  // Disable button and show spinner
+  btn.disabled = true;
+  btnText.textContent = 'Deploying...';
+  btnSpinner.classList.remove('hidden');
+  
+  log.innerHTML = '<div>📡 Connecting to server...</div>';
+  log.innerHTML += '<div>🔧 Installing Docker...</div>';
+  log.innerHTML += '<div>📦 Building container...</div>';
+  log.innerHTML += '<div>🔐 Generating keys...</div>';
+  log.innerHTML += '<div>⚙️  Configuring WireGuard...</div>';
+  
+  fetch('/servers/{{ server.id }}/deploy', {method: 'POST'})
+    .then(r => r.json())
+    .then(d => {
+      if (d.success) {
+        log.innerHTML += '<div class="text-green-500 font-bold">✅ Deployment successful!</div>';
+        log.innerHTML += '<div class="text-yellow-300">🔌 VPN Port: ' + d.vpn_port + '</div>';
+        log.innerHTML += '<div class="text-yellow-300">🔑 Public Key: ' + d.public_key.substring(0, 40) + '...</div>';
+        btnText.textContent = 'Redirecting...';
+        btnSpinner.classList.add('hidden');
+        setTimeout(() => window.location.href = '/servers/{{ server.id }}', 2000);
+      } else {
+        log.innerHTML += '<div class="text-red-500 font-bold">❌ Error: ' + (d.error || 'Unknown error') + '</div>';
+        btn.disabled = false;
+        btnText.textContent = 'Retry Deployment';
+        btnSpinner.classList.add('hidden');
+      }
+    })
+    .catch(e => {
+      log.innerHTML += '<div class="text-red-500 font-bold">❌ Network error: ' + e.message + '</div>';
+      btn.disabled = false;
+      btnText.textContent = 'Retry Deployment';
+      btnSpinner.classList.add('hidden');
+    });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,44 @@
+# Environment
+.env
+.env.local
+.env.production
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Dependencies
+vendor/
+composer.lock
+node_modules/
+
+# Logs
+*.log
+logs/
+*.tmp
+
+# Database
+db_data/
+
+# Test files
+test_qr.png
+test_qr.svg
+/tmp/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+dist/
+build/
+
+# Backups
+*.bak
+backup/
+backups/
+TEST_RESULTS.md
+LDAP_FEATURE.md

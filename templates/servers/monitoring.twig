@@ -1,0 +1,421 @@
+{% extends "layout.twig" %}
+
+{% block title %}{{ server.name }} - Monitoring{% endblock %}
+
+{% block styles %}
+<style>
+.metrics-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 20px;
+    margin-bottom: 30px;
+}
+
+.metric-card {
+    background: white;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.metric-card h3 {
+    margin: 0 0 15px 0;
+    font-size: 16px;
+    color: #333;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.metric-value {
+    font-size: 12px;
+    color: #666;
+    font-weight: normal;
+}
+
+.chart-container {
+    height: 250px;
+    position: relative;
+}
+
+.clients-metrics {
+    background: white;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.clients-metrics h3 {
+    margin: 0 0 20px 0;
+    font-size: 18px;
+    color: #333;
+}
+
+.client-speed-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px;
+    margin-bottom: 8px;
+    background: #f8f9fa;
+    border-radius: 6px;
+}
+
+.client-name {
+    font-weight: 500;
+    color: #333;
+}
+
+.client-speeds {
+    display: flex;
+    gap: 20px;
+    font-size: 14px;
+}
+
+.speed-up {
+    color: #28a745;
+}
+
+.speed-down {
+    color: #007bff;
+}
+
+.refresh-info {
+    text-align: center;
+    padding: 15px;
+    background: #e7f3ff;
+    border-radius: 6px;
+    margin-bottom: 20px;
+    color: #0066cc;
+}
+
+.no-data {
+    text-align: center;
+    padding: 40px;
+    color: #999;
+}
+
+.back-link {
+    display: inline-block;
+    margin-bottom: 20px;
+    color: #007bff;
+    text-decoration: none;
+}
+
+.back-link:hover {
+    text-decoration: underline;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="max-width: 1400px; margin: 0 auto;">
+    <a href="/servers/{{ server.id }}" class="back-link">← Back to Server</a>
+    
+    <h1>{{ server.name }} - Monitoring</h1>
+    
+    <div class="refresh-info">
+        Auto-refresh every 30 seconds
+    </div>
+    
+    <div class="metrics-container">
+        <div class="metric-card">
+            <h3>
+                CPU Usage
+                <span class="metric-value" id="cpu-current">--</span>
+            </h3>
+            <div class="chart-container">
+                <canvas id="cpu-chart"></canvas>
+            </div>
+        </div>
+        
+        <div class="metric-card">
+            <h3>
+                RAM Usage
+                <span class="metric-value" id="ram-current">--</span>
+            </h3>
+            <div class="chart-container">
+                <canvas id="ram-chart"></canvas>
+            </div>
+        </div>
+        
+        <div class="metric-card">
+            <h3>
+                Disk Usage
+                <span class="metric-value" id="disk-current">--</span>
+            </h3>
+            <div class="chart-container">
+                <canvas id="disk-chart"></canvas>
+            </div>
+        </div>
+        
+        <div class="metric-card">
+            <h3>
+                Network Speed
+                <span class="metric-value" id="network-current">--</span>
+            </h3>
+            <div class="chart-container">
+                <canvas id="network-chart"></canvas>
+            </div>
+        </div>
+    </div>
+    
+    <div class="clients-metrics">
+        <h3>Client Speeds</h3>
+        <div id="clients-list">
+            <div class="no-data">Loading...</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+const serverId = {{ server.id }};
+let charts = {};
+
+// Chart configurations
+const chartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+        legend: {
+            display: false
+        }
+    },
+    scales: {
+        x: {
+            display: true,
+            type: 'time',
+            time: {
+                unit: 'minute',
+                displayFormats: {
+                    minute: 'HH:mm'
+                }
+            }
+        },
+        y: {
+            beginAtZero: true
+        }
+    }
+};
+
+// Initialize charts
+function initCharts() {
+    // CPU Chart
+    charts.cpu = new Chart(document.getElementById('cpu-chart'), {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'CPU %',
+                data: [],
+                borderColor: '#dc3545',
+                backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                tension: 0.4,
+                fill: true
+            }]
+        },
+        options: {
+            ...chartOptions,
+            scales: {
+                ...chartOptions.scales,
+                y: {
+                    beginAtZero: true,
+                    max: 100
+                }
+            }
+        }
+    });
+    
+    // RAM Chart
+    charts.ram = new Chart(document.getElementById('ram-chart'), {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'RAM MB',
+                data: [],
+                borderColor: '#ffc107',
+                backgroundColor: 'rgba(255, 193, 7, 0.1)',
+                tension: 0.4,
+                fill: true
+            }]
+        },
+        options: chartOptions
+    });
+    
+    // Disk Chart
+    charts.disk = new Chart(document.getElementById('disk-chart'), {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'Disk GB',
+                data: [],
+                borderColor: '#17a2b8',
+                backgroundColor: 'rgba(23, 162, 184, 0.1)',
+                tension: 0.4,
+                fill: true
+            }]
+        },
+        options: chartOptions
+    });
+    
+    // Network Chart
+    charts.network = new Chart(document.getElementById('network-chart'), {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [
+                {
+                    label: 'RX Mbps',
+                    data: [],
+                    borderColor: '#007bff',
+                    backgroundColor: 'rgba(0, 123, 255, 0.1)',
+                    tension: 0.4,
+                    fill: true
+                },
+                {
+                    label: 'TX Mbps',
+                    data: [],
+                    borderColor: '#28a745',
+                    backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                    tension: 0.4,
+                    fill: true
+                }
+            ]
+        },
+        options: {
+            ...chartOptions,
+            plugins: {
+                legend: {
+                    display: true
+                }
+            }
+        }
+    });
+}
+
+// Update server metrics
+async function updateServerMetrics() {
+    try {
+        const response = await fetch(`/api/servers/${serverId}/metrics?hours=1`, {
+            headers: {
+                'Authorization': 'Bearer ' + localStorage.getItem('auth_token')
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (data.success && data.metrics.length > 0) {
+            const metrics = data.metrics;
+            const latest = metrics[metrics.length - 1];
+            
+            // Update current values
+            document.getElementById('cpu-current').textContent = `${latest.cpu_percent}%`;
+            document.getElementById('ram-current').textContent = 
+                `${latest.ram_used_mb} / ${latest.ram_total_mb} MB (${Math.round(latest.ram_used_mb / latest.ram_total_mb * 100)}%)`;
+            document.getElementById('disk-current').textContent = 
+                `${latest.disk_used_gb} / ${latest.disk_total_gb} GB (${Math.round(latest.disk_used_gb / latest.disk_total_gb * 100)}%)`;
+            document.getElementById('network-current').textContent = 
+                `↓ ${latest.network_rx_mbps} Mbps ↑ ${latest.network_tx_mbps} Mbps`;
+            
+            // Update charts
+            const timestamps = metrics.map(m => new Date(m.collected_at));
+            
+            charts.cpu.data.labels = timestamps;
+            charts.cpu.data.datasets[0].data = metrics.map(m => parseFloat(m.cpu_percent));
+            charts.cpu.update('none');
+            
+            charts.ram.data.labels = timestamps;
+            charts.ram.data.datasets[0].data = metrics.map(m => parseInt(m.ram_used_mb));
+            charts.ram.update('none');
+            
+            charts.disk.data.labels = timestamps;
+            charts.disk.data.datasets[0].data = metrics.map(m => parseFloat(m.disk_used_gb));
+            charts.disk.update('none');
+            
+            charts.network.data.labels = timestamps;
+            charts.network.data.datasets[0].data = metrics.map(m => parseFloat(m.network_rx_mbps));
+            charts.network.data.datasets[1].data = metrics.map(m => parseFloat(m.network_tx_mbps));
+            charts.network.update('none');
+        }
+    } catch (error) {
+        console.error('Failed to fetch server metrics:', error);
+    }
+}
+
+// Update client speeds
+async function updateClientSpeeds() {
+    try {
+        const clientIds = {{ clients|map(c => c.id)|json_encode|raw }};
+        
+        if (clientIds.length === 0) {
+            document.getElementById('clients-list').innerHTML = 
+                '<div class="no-data">No active clients</div>';
+            return;
+        }
+        
+        const clientsData = [];
+        
+        for (const clientId of clientIds) {
+            try {
+                const response = await fetch(`/api/clients/${clientId}/metrics?hours=1`, {
+                    headers: {
+                        'Authorization': 'Bearer ' + localStorage.getItem('auth_token')
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (data.success && data.metrics.length > 0) {
+                    const latest = data.metrics[data.metrics.length - 1];
+                    const client = {{ clients|json_encode|raw }}.find(c => c.id === clientId);
+                    
+                    clientsData.push({
+                        name: client.name,
+                        speedUp: parseFloat(latest.speed_up_kbps),
+                        speedDown: parseFloat(latest.speed_down_kbps)
+                    });
+                }
+            } catch (error) {
+                console.error(`Failed to fetch client ${clientId} metrics:`, error);
+            }
+        }
+        
+        // Sort by total speed
+        clientsData.sort((a, b) => (b.speedUp + b.speedDown) - (a.speedUp + a.speedDown));
+        
+        // Render clients list
+        const html = clientsData.map(c => `
+            <div class="client-speed-item">
+                <span class="client-name">${c.name}</span>
+                <div class="client-speeds">
+                    <span class="speed-up">↑ ${c.speedUp.toFixed(2)} Kbps</span>
+                    <span class="speed-down">↓ ${c.speedDown.toFixed(2)} Kbps</span>
+                </div>
+            </div>
+        `).join('');
+        
+        document.getElementById('clients-list').innerHTML = html || 
+            '<div class="no-data">No active traffic</div>';
+            
+    } catch (error) {
+        console.error('Failed to update client speeds:', error);
+    }
+}
+
+// Initialize
+initCharts();
+updateServerMetrics();
+updateClientSpeeds();
+
+// Auto-refresh every 30 seconds
+setInterval(() => {
+    updateServerMetrics();
+    updateClientSpeeds();
+}, 30000);
+</script>
+{% endblock %}
