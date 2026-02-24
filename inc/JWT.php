@@ -1,11 +1,4 @@
 <?php
-/**
- * JWT Authentication Helper
- * Provides JWT token generation and validation for API authentication
- */
-
-use Firebase\JWT\JWT as FirebaseJWT;
-use Firebase\JWT\Key;
 
 class JWT {
     private static ?string $secretKey = null;
@@ -60,15 +53,15 @@ class JWT {
         $expire = $issuedAt + $expiresIn;
         
         $payload = [
-            'iss' => 'amnezia-panel',          // Issuer
-            'aud' => 'amnezia-api',            // Audience
-            'iat' => $issuedAt,                // Issued at
-            'exp' => $expire,                  // Expiration
-            'sub' => $userId,                  // Subject (user ID)
-            'jti' => bin2hex(random_bytes(16)) // JWT ID (unique token identifier)
+            'iss' => 'amnezia-panel',
+            'aud' => 'amnezia-api',
+            'iat' => $issuedAt,
+            'exp' => $expire,
+            'sub' => $userId,
+            'jti' => bin2hex(random_bytes(16))
         ];
         
-        return FirebaseJWT::encode($payload, self::getSecretKey(), 'HS256');
+        return self::encodeHmacSha256($payload, self::getSecretKey());
     }
     
     /**
@@ -78,19 +71,24 @@ class JWT {
      * @return object|null Decoded token payload or null if invalid
      */
     public static function decode(string $token): ?object {
-        try {
-            $decoded = FirebaseJWT::decode($token, new Key(self::getSecretKey(), 'HS256'));
-            
-            // Verify issuer and audience
-            if ($decoded->iss !== 'amnezia-panel' || $decoded->aud !== 'amnezia-api') {
-                return null;
-            }
-            
-            return $decoded;
-        } catch (Exception $e) {
-            error_log('JWT decode error: ' . $e->getMessage());
+        $payload = self::decodeHmacSha256($token, self::getSecretKey());
+        if ($payload === null) {
             return null;
         }
+        
+        if (($payload['iss'] ?? null) !== 'amnezia-panel' || ($payload['aud'] ?? null) !== 'amnezia-api') {
+            return null;
+        }
+        
+        $now = time();
+        if (isset($payload['exp']) && $now >= (int)$payload['exp']) {
+            return null;
+        }
+        if (isset($payload['nbf']) && $now < (int)$payload['nbf']) {
+            return null;
+        }
+        
+        return (object)$payload;
     }
     
     /**
@@ -129,6 +127,73 @@ class JWT {
         $user = $stmt->fetch();
         
         return $user ?: null;
+    }
+    
+    /**
+     * Minimal HS256 JWT implementation (без внешних библиотек)
+     */
+    private static function encodeHmacSha256(array $payload, string $secret): string {
+        $header = ['alg' => 'HS256', 'typ' => 'JWT'];
+        
+        $segments = [];
+        $segments[] = self::base64UrlEncode(json_encode($header, JSON_UNESCAPED_SLASHES));
+        $segments[] = self::base64UrlEncode(json_encode($payload, JSON_UNESCAPED_SLASHES));
+        $signingInput = implode('.', $segments);
+        
+        $signature = hash_hmac('sha256', $signingInput, $secret, true);
+        $segments[] = self::base64UrlEncode($signature);
+        
+        return implode('.', $segments);
+    }
+    
+    private static function decodeHmacSha256(string $jwt, string $secret): ?array {
+        $parts = explode('.', $jwt);
+        if (count($parts) !== 3) {
+            return null;
+        }
+        
+        [$headerB64, $payloadB64, $signatureB64] = $parts;
+        
+        $headerJson = self::base64UrlDecode($headerB64);
+        $payloadJson = self::base64UrlDecode($payloadB64);
+        $signature = self::base64UrlDecode($signatureB64);
+        
+        if ($headerJson === null || $payloadJson === null || $signature === null) {
+            return null;
+        }
+        
+        $header = json_decode($headerJson, true);
+        $payload = json_decode($payloadJson, true);
+        
+        if (!is_array($header) || !is_array($payload)) {
+            return null;
+        }
+        
+        if (($header['alg'] ?? null) !== 'HS256') {
+            return null;
+        }
+        
+        $signingInput = $headerB64 . '.' . $payloadB64;
+        $expected = hash_hmac('sha256', $signingInput, $secret, true);
+        
+        if (!hash_equals($expected, $signature)) {
+            return null;
+        }
+        
+        return $payload;
+    }
+    
+    private static function base64UrlEncode(string $data): string {
+        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+    }
+    
+    private static function base64UrlDecode(string $data): ?string {
+        $remainder = strlen($data) % 4;
+        if ($remainder > 0) {
+            $data .= str_repeat('=', 4 - $remainder);
+        }
+        $decoded = base64_decode(strtr($data, '-_', '+/'), true);
+        return $decoded === false ? null : $decoded;
     }
     
     /**
