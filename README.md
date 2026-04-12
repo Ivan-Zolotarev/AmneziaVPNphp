@@ -57,6 +57,17 @@ ADMIN_PASSWORD=admin123
 JWT_SECRET=your-secret-key-change-this
 ```
 
+### Диск и бинарные логи MySQL
+
+В репозитории в файле `my.cnf` задано **`binlog_expire_logs_seconds = 604800`** (7 суток): бинарные логи MySQL 8 не копятся бесконечно и не забивают том Docker под `/var/lib/mysql`.
+
+- После обновления `my.cnf` перезапустите только БД: `docker compose restart db`.
+- Уже накопленные большие файлы `binlog.*` сами не исчезнут сразу — при нехватке места их можно один раз удалить из MySQL (данные таблиц панели не трогаются), из каталога проекта:
+  ```bash
+  docker compose exec db mysql -uroot -p"$(sed -n 's/^DB_ROOT_PASSWORD=//p' .env)" -e "PURGE BINARY LOGS BEFORE DATE_SUB(UTC_TIMESTAMP(), INTERVAL 3 DAY);"
+  ```
+  Пароль root задаётся в `.env` как `DB_ROOT_PASSWORD`.
+
 ---
 
 ## Как пользоваться

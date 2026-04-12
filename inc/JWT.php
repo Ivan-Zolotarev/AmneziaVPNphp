@@ -1,5 +1,5 @@
 <?php
-
+ 
 class JWT {
     private static ?string $secretKey = null;
     
