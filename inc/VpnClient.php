@@ -432,15 +432,13 @@ class VpnClient {
         // Parse and remove the peer section
         $newConfig = self::removePeerFromConfig($config, $publicKey);
         
-        // Write back to file
-        $escapedConfig = str_replace("'", "'\\''", $newConfig);
-        $writeCmd = sprintf(
-            "docker exec -i %s sh -c 'echo '\''%s'\'' > /opt/amnezia/awg/wg0.conf'",
+        // Write back to file (stream via stdin to avoid command length/escaping issues)
+        self::writeFileInContainer(
+            $serverData,
             $containerName,
-            $escapedConfig
+            '/opt/amnezia/awg/wg0.conf',
+            $newConfig
         );
-        
-        self::executeServerCommand($serverData, $writeCmd, true);
         
         // ПРИМЕЧАНИЕ. НЕ запускайте здесь wg-quick save! Он перезаписывает wg0.conf стандартным
         // Формат WireGuard и параметры Amnezia AWG (Jc, Jmin, Jmax, S1, S2, H1-H4),
@@ -518,11 +516,86 @@ class VpnClient {
         // Re-index array
         $table = array_values($table);
         
-        // Save back
+        // Save back (stream via stdin to avoid command length/escaping issues)
         $newTableJson = json_encode($table, JSON_PRETTY_PRINT);
-        $escaped = addslashes($newTableJson);
-        $updateCmd = sprintf("docker exec -i %s sh -c 'echo \"%s\" > /opt/amnezia/awg/clientsTable'", $containerName, $escaped);
-        self::executeServerCommand($serverData, $updateCmd, true);
+        self::writeFileInContainer(
+            $serverData,
+            $containerName,
+            '/opt/amnezia/awg/clientsTable',
+            $newTableJson
+        );
+    }
+
+    /**
+     * Write file inside AWG container using streaming (stdin).
+     * This avoids corrupting large files due to shell quoting or command length limits.
+     */
+    private static function writeFileInContainer(array $serverData, string $containerName, string $path, string $content): void
+    {
+        // Ensure trailing newline for config/JSON files written via cat
+        if ($content !== '' && !str_ends_with($content, "\n")) {
+            $content .= "\n";
+        }
+
+        $cmd = sprintf(
+            "docker exec -i %s sh -c %s",
+            escapeshellarg($containerName),
+            escapeshellarg("cat > " . $path)
+        );
+
+        self::executeServerCommandStream($serverData, $cmd, $content, true);
+    }
+
+    /**
+     * Execute SSH command and stream stdin to remote process.
+     * Returns stdout+stderr output.
+     */
+    private static function executeServerCommandStream(array $serverData, string $command, string $stdin, bool $sudo = false): string
+    {
+        if ($sudo && strtolower($serverData['username']) !== 'root') {
+            $command = "echo '{$serverData['password']}' | sudo -S " . $command;
+        }
+
+        // IMPORTANT: we do not wrap $command via escapeshellarg here, because we need it to be interpreted
+        // by the remote shell as a full command string. We pass it as a single argument to ssh.
+        $sshCommand = sprintf(
+            "sshpass -p '%s' ssh -p %d -q -o LogLevel=ERROR -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no %s@%s %s 2>&1",
+            $serverData['password'],
+            $serverData['port'],
+            $serverData['username'],
+            $serverData['host'],
+            escapeshellarg($command)
+        );
+
+        $descriptors = [
+            0 => ['pipe', 'r'], // stdin
+            1 => ['pipe', 'w'], // stdout
+            2 => ['pipe', 'w'], // stderr
+        ];
+
+        $proc = proc_open($sshCommand, $descriptors, $pipes);
+        if (!is_resource($proc)) {
+            throw new Exception('Failed to start SSH process');
+        }
+
+        fwrite($pipes[0], $stdin);
+        fclose($pipes[0]);
+
+        $stdout = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[2]);
+
+        $exitCode = proc_close($proc);
+        $out = ($stdout ?? '') . ($stderr ?? '');
+
+        // If command fails, surface it to caller (helps debugging real server issues)
+        if ($exitCode !== 0) {
+            throw new Exception("Remote command failed (exit {$exitCode}): " . trim($out));
+        }
+
+        return $out;
     }
     
     /**

@@ -230,7 +230,7 @@ RUN apk add --no-cache bash curl dumb-init
 RUN apk --update upgrade --no-cache
 
 RUN mkdir -p /opt/amnezia
-RUN echo -e "#!/bin/bash\ntail -f /dev/null" > /opt/amnezia/start.sh
+COPY start.sh /opt/amnezia/start.sh
 RUN chmod a+x /opt/amnezia/start.sh
 
 ENTRYPOINT [ "dumb-init", "/opt/amnezia/start.sh" ]
@@ -246,7 +246,8 @@ DOCKERFILE;
      */
     private function createStartScript(): void {
         $script = <<<'BASH'
-#!/bin/bash
+#!/usr/bin/env bash
+set -e
 
 echo "Container startup"
 
@@ -258,30 +259,47 @@ for i in {1..30}; do
     sleep 1
 done
 
-# Kill daemons in case of restart
-wg-quick down /opt/amnezia/awg/wg0.conf 2>/dev/null || true
-
 # Start daemons if configured
 if [ -f /opt/amnezia/awg/wg0.conf ]; then
+    # Kill daemons in case of restart
+    wg-quick down /opt/amnezia/awg/wg0.conf 2>/dev/null || true
     wg-quick up /opt/amnezia/awg/wg0.conf
     echo "WireGuard started"
 else
     echo "No wg0.conf found, skipping WireGuard startup"
 fi
 
+# Enable IPv4 forwarding (inside container namespace)
+echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+
+# Determine VPN subnet from config (fallback to 10.8.1.0/24)
+VPN_SUBNET="$(grep -m1 '^Address' /opt/amnezia/awg/wg0.conf 2>/dev/null | cut -d= -f2 | xargs || true)"
+if [ -z "$VPN_SUBNET" ]; then
+  VPN_SUBNET="10.8.1.0/24"
+fi
+
+# Determine outbound interface (fallback to eth0)
+OUT_IF="$(ip route show default 2>/dev/null | awk '{print $5}' | head -n1 || true)"
+if [ -z "$OUT_IF" ]; then
+  OUT_IF="eth0"
+fi
+
 # Allow traffic on the TUN interface
-iptables -A INPUT -i wg0 -j ACCEPT 2>/dev/null || true
-iptables -A FORWARD -i wg0 -j ACCEPT 2>/dev/null || true
-iptables -A OUTPUT -o wg0 -j ACCEPT 2>/dev/null || true
+iptables -C INPUT -i wg0 -j ACCEPT 2>/dev/null || iptables -A INPUT -i wg0 -j ACCEPT 2>/dev/null || true
+iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i wg0 -j ACCEPT 2>/dev/null || true
+iptables -C OUTPUT -o wg0 -j ACCEPT 2>/dev/null || iptables -A OUTPUT -o wg0 -j ACCEPT 2>/dev/null || true
 
-# Allow forwarding traffic only from the VPN
-iptables -A FORWARD -i wg0 -o eth0 -s 10.8.1.0/24 -j ACCEPT 2>/dev/null || true
-iptables -A FORWARD -i wg0 -o eth1 -s 10.8.1.0/24 -j ACCEPT 2>/dev/null || true
+# Allow forwarding traffic from VPN to outbound interface
+iptables -C FORWARD -i wg0 -o "$OUT_IF" -s "$VPN_SUBNET" -j ACCEPT 2>/dev/null || \
+  iptables -A FORWARD -i wg0 -o "$OUT_IF" -s "$VPN_SUBNET" -j ACCEPT 2>/dev/null || true
 
-iptables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+# Allow established return traffic back into VPN
+iptables -C FORWARD -i "$OUT_IF" -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+  iptables -A FORWARD -i "$OUT_IF" -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
 
-iptables -t nat -A POSTROUTING -s 10.8.1.0/24 -o eth0 -j MASQUERADE 2>/dev/null || true
-iptables -t nat -A POSTROUTING -s 10.8.1.0/24 -o eth1 -j MASQUERADE 2>/dev/null || true
+# NAT (masquerade) VPN subnet to outbound interface
+iptables -t nat -C POSTROUTING -s "$VPN_SUBNET" -o "$OUT_IF" -j MASQUERADE 2>/dev/null || \
+  iptables -t nat -A POSTROUTING -s "$VPN_SUBNET" -o "$OUT_IF" -j MASQUERADE 2>/dev/null || true
 
 tail -f /dev/null
 BASH;
