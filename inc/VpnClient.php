@@ -432,19 +432,24 @@ class VpnClient {
         // Parse and remove the peer section
         $newConfig = self::removePeerFromConfig($config, $publicKey);
         
-        // Write back to file (stream via stdin to avoid command length/escaping issues)
         self::writeFileInContainer(
             $serverData,
             $containerName,
             '/opt/amnezia/awg/wg0.conf',
             $newConfig
         );
+
+        $syncCmd = sprintf(
+            "docker exec -i %s bash -lc %s",
+            $containerName,
+            escapeshellarg("wg syncconf wg0 <(wg-quick strip /opt/amnezia/awg/wg0.conf)")
+        );
+        self::executeServerCommand($serverData, $syncCmd, true);
         
         // ПРИМЕЧАНИЕ. НЕ запускайте здесь wg-quick save! Он перезаписывает wg0.conf стандартным
         // Формат WireGuard и параметры Amnezia AWG (Jc, Jmin, Jmax, S1, S2, H1-H4),
         // ломаем всех остальных клиентов. Правильный конфиг мы уже написали выше.
         
-        // Remove from clientsTable
         self::removeFromClientsTable($serverData, $publicKey);
     }
     
@@ -516,7 +521,7 @@ class VpnClient {
         // Re-index array
         $table = array_values($table);
         
-        // Save back (stream via stdin to avoid command length/escaping issues)
+        // Сохраняем таблицу потоком (stdin), чтобы избежать проблем с длиной команды/экранированием
         $newTableJson = json_encode($table, JSON_PRETTY_PRINT);
         self::writeFileInContainer(
             $serverData,
@@ -527,12 +532,12 @@ class VpnClient {
     }
 
     /**
-     * Write file inside AWG container using streaming (stdin).
-     * This avoids corrupting large files due to shell quoting or command length limits.
+     * Записывает файл внутрь контейнера AWG потоком (stdin).
+     * Так мы не портим большие файлы из-за кавычек/экранирования и лимитов длины команды.
      */
     private static function writeFileInContainer(array $serverData, string $containerName, string $path, string $content): void
     {
-        // Ensure trailing newline for config/JSON files written via cat
+        // Добавляем перевод строки в конец (для файлов, которые пишем через cat)
         if ($content !== '' && !str_ends_with($content, "\n")) {
             $content .= "\n";
         }
@@ -547,8 +552,8 @@ class VpnClient {
     }
 
     /**
-     * Execute SSH command and stream stdin to remote process.
-     * Returns stdout+stderr output.
+     * Выполняет команду по SSH и передаёт stdin в удалённый процесс.
+     * Возвращает stdout+stderr.
      */
     private static function executeServerCommandStream(array $serverData, string $command, string $stdin, bool $sudo = false): string
     {
@@ -556,8 +561,9 @@ class VpnClient {
             $command = "echo '{$serverData['password']}' | sudo -S " . $command;
         }
 
-        // IMPORTANT: we do not wrap $command via escapeshellarg here, because we need it to be interpreted
-        // by the remote shell as a full command string. We pass it as a single argument to ssh.
+        // ВАЖНО: тут мы НЕ оборачиваем $command в escapeshellarg "снаружи",
+        // потому что нам нужно, чтобы удалённая оболочка интерпретировала команду целиком.
+        // Мы передаём её в ssh как один аргумент.
         $sshCommand = sprintf(
             "sshpass -p '%s' ssh -p %d -q -o LogLevel=ERROR -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no %s@%s %s 2>&1",
             $serverData['password'],
@@ -590,7 +596,7 @@ class VpnClient {
         $exitCode = proc_close($proc);
         $out = ($stdout ?? '') . ($stderr ?? '');
 
-        // If command fails, surface it to caller (helps debugging real server issues)
+        // Если команда упала — пробрасываем ошибку наверх (помогает дебажить реальный сервер)
         if ($exitCode !== 0) {
             throw new Exception("Remote command failed (exit {$exitCode}): " . trim($out));
         }
