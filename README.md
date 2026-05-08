@@ -238,11 +238,11 @@ DELETE /api/tokens/{id}             - отозвать токен
 **Серверы**
 
 ```text
-GET    /api/servers                 - список серверов пользователя
-POST   /api/servers/create          - создать сервер
+GET    /api/servers                 - список серверов пользователя {x}
+POST   /api/servers/create          - создать сервер {x}
         Параметры: name, host, port, username, password
-DELETE /api/servers/{id}/delete     - удалить сервер
-GET    /api/servers/{id}/clients    - список клиентов на сервере
+DELETE /api/servers/{id}/delete     - удалить сервер {x}
+GET    /api/servers/{id}/clients    - список клиентов на сервере {x}
 ```
 
 **Клиенты**
