@@ -238,24 +238,24 @@ DELETE /api/tokens/{id}             - отозвать токен
 **Серверы**
 
 ```text
-GET    /api/servers                 - список серверов пользователя {x}
-POST   /api/servers/create          - создать сервер {x}
+GET    /api/servers                 - список серверов пользователя [x]
+POST   /api/servers/create          - создать сервер [x]
         Параметры: name, host, port, username, password
-DELETE /api/servers/{id}/delete     - удалить сервер {x}
-GET    /api/servers/{id}/clients    - список клиентов на сервере {x}
+DELETE /api/servers/{id}/delete     - удалить сервер [x]
+GET    /api/servers/{id}/clients    - список клиентов на сервере [x]
 ```
 
 **Клиенты**
 
 ```text
 GET    /api/clients                 - все клиенты пользователя
-GET    /api/clients/{id}/details    - детали клиента + статы + конфиг + QR
-GET    /api/clients/{id}/qr         - только QR‑код
-POST   /api/clients/create          - создать клиента (возвращает конфиг и QR)
+GET    /api/clients/{id}/details    - детали клиента + статы + конфиг + QR [x]
+GET    /api/clients/{id}/qr         - только QR‑код [x]
+POST   /api/clients/create          - создать клиента (возвращает конфиг и QR) [x]
         Параметры: server_id, name, expires_in_days (опционально)
-POST   /api/clients/{id}/revoke     - отозвать доступ
-POST   /api/clients/{id}/restore    - восстановить доступ
-DELETE /api/clients/{id}/delete     - удалить клиента
+POST   /api/clients/{id}/revoke     - отозвать доступ [x]
+POST   /api/clients/{id}/restore    - восстановить доступ [x]
+DELETE /api/clients/{id}/delete     - удалить клиента [x]
 POST   /api/clients/{id}/set-expiration  - установить дату окончания
         Параметры: expires_at (Y-m-d H:i:s или null)
 POST   /api/clients/{id}/extend     - продлить срок
