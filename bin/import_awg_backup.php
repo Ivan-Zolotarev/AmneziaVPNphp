@@ -59,18 +59,25 @@ function parseWg0Conf(string $content): array
     $section = null;
     $currentPeer = null;
 
+    $flushPeer = static function () use (&$peers, &$currentPeer): void {
+        if ($currentPeer !== null && !empty($currentPeer['PublicKey'])) {
+            $peers[] = $currentPeer;
+        }
+        $currentPeer = null;
+    };
+
     foreach (preg_split('/\r\n|\r|\n/', $content) as $line) {
         $trimmed = trim($line);
 
         if ($trimmed === '[Interface]') {
+            $flushPeer();
             $section = 'interface';
-            $currentPeer = null;
             continue;
         }
         if ($trimmed === '[Peer]') {
+            $flushPeer();
             $section = 'peer';
             $currentPeer = [];
-            $peers[] = &$currentPeer;
             continue;
         }
         if ($trimmed === '' || strpos($trimmed, '#') === 0) {
@@ -91,6 +98,8 @@ function parseWg0Conf(string $content): array
             $currentPeer[$key] = $value;
         }
     }
+
+    $flushPeer();
 
     return ['interface' => $interface, 'peers' => $peers];
 }
