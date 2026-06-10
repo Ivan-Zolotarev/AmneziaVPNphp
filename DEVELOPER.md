@@ -629,7 +629,7 @@ try {
 
 - [ ] Change default admin password
 - [ ] Update database passwords in docker-compose.yml
-- [ ] Set up HTTPS (nginx reverse proxy + Let's Encrypt)
+- [ ] Set up HTTPS: `PANEL_DOMAIN` + `ACME_EMAIL` in `.env`, then `docker compose up -d --build` (see README)
 - [ ] Disable error display
 - [ ] Enable error logging
 - [ ] Set up automated backups

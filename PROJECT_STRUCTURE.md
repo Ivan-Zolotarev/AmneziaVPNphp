@@ -87,7 +87,8 @@ amnezia-web-panel/
 ### Docker
 
 - **`docker-compose.yml`**
-  - `web` — контейнер с PHP 8.2 + Apache, монтирует проект, слушает порт `8082`.
+  - `web` — контейнер с PHP 8.2 + Apache, монтирует проект; снаружи только `127.0.0.1:8082`.
+  - `nginx` — reverse proxy, порты 80/443; certbot внутри образа для Let's Encrypt.
   - `db` — контейнер MySQL 8.0, данные в томе `db_data`, при первом старте накатывает миграции.
 
 - **`Dockerfile`**
@@ -226,8 +227,7 @@ QrUtil::pngBase64($payload) → data:image/png;base64,...
 
 - CSRF‑защита (form tokens)
 - Rate limiting для API
-- Обязательный HTTPS (reverse‑proxy + Let’s Encrypt)
-- Заголовки безопасности (CSP, HSTS и т.п.)
+- Заголовки безопасности (CSP, HSTS и т.п.; HTTPS — nginx + certbot, см. README)
 
 Мониторинг и резервное копирование описаны в `README.md` (разделы Monitoring / Backup & Recovery).
 

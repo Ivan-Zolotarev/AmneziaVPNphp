@@ -27,6 +27,7 @@
 git clone https://github.com/Ivan-Zolotarev/AmneziaVPNphp.git
 cd AmneziaVPNphp
 cp .env.example .env
+chmod +x nginx/docker-entrypoint.sh
 
 # Docker Compose V2 (рекомендуется)
 docker compose up -d
@@ -37,10 +38,61 @@ docker-compose up -d
 docker-compose exec web composer install
 ```
 
-Панель будет доступна по адресу: `http://localhost:8082`
+Локально на сервере: `http://127.0.0.1:8082` (порт только на localhost).
+
+С доменом: `https://ваш-домен` (Let's Encrypt). Без домена — по IP: `https://ваш-ip` (самоподписанный сертификат, см. ниже).
 
 Логин по умолчанию: `admin@amnez.ia` / `admin123`  
 **Обязательно измените пароль после первого входа.**
+
+### HTTPS (nginx + Let's Encrypt)
+
+Контейнер **nginx** — reverse proxy перед PHP. Внутри него **certbot** по протоколу ACME (webroot) получает и продлевает сертификат Let's Encrypt.
+
+**Схема:**
+
+```
+Браузер → nginx (:443 HTTPS) → web (Apache/PHP :80 в Docker-сети)
+                ↑
+         certbot (тот же контейнер, том /etc/letsencrypt)
+```
+
+1. Укажите в `.env` домен и email:
+   ```env
+   PANEL_DOMAIN=panel.example.com
+   ACME_EMAIL=you@example.com
+   ```
+2. **A-запись** DNS: `panel.example.com` → IP VPS.
+3. Откройте порты **80** и **443** (нужны и для первой выдачи, и для продления):
+   ```bash
+   sudo ufw allow 80/tcp
+   sudo ufw allow 443/tcp
+   ```
+4. `docker compose up -d --build`
+
+При первом старте nginx поднимается на HTTP, certbot проходит проверку Let's Encrypt, затем включается HTTPS и редирект с HTTP. Продление — фоновый цикл раз в 12 часов.
+
+Логи:
+```bash
+docker compose logs -f nginx
+```
+
+### HTTPS по IP (без домена)
+
+Let's Encrypt не выдаёт сертификаты на голый IP. Если домена нет, укажите публичный IPv4 VPS:
+
+```env
+PANEL_DOMAIN=
+PANEL_IP=203.0.113.5
+```
+
+Откройте порт **443** (`sudo ufw allow 443/tcp`) и перезапустите: `docker compose up -d --build`.
+
+Nginx сгенерирует **самоподписанный** сертификат с IP в SAN и включит HTTPS с редиректом с HTTP. Браузер покажет предупреждение о недоверенном сертификате — для доступа по IP без домена это ожидаемо. Сертификат хранится в Docker-томе и перевыпускается при истечении срока.
+
+Панель: `https://203.0.113.5` (подставьте свой IP).
+
+**Без HTTPS:** оставьте `PANEL_DOMAIN` и `PANEL_IP` пустыми — nginx отдаёт панель по HTTP на порту 80.
 
 ### Настройка (`.env`)
 

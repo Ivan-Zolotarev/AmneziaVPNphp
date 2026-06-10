@@ -12,7 +12,7 @@ services:
       MYSQL_USER: ${DB_USERNAME:-amnezia}
       MYSQL_PASSWORD: ${DB_PASSWORD:-amnezia}
     ports:
-      - "3307:3306"
+      - "127.0.0.1:3307:3306"
     volumes:
       - db_data:/var/lib/mysql
       - ./migrations:/docker-entrypoint-initdb.d
@@ -45,7 +45,41 @@ services:
     volumes:
       - ./:/var/www/html
     ports:
-      - "8082:80"
+      - "127.0.0.1:8082:80"
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  nginx:
+    build:
+      context: ./nginx
+    container_name: amnezia-panel-nginx
+    restart: unless-stopped
+    depends_on:
+      - web
+    env_file:
+      - .env
+    environment:
+      PANEL_DOMAIN: ${PANEL_DOMAIN:-}
+      PANEL_IP: ${PANEL_IP:-}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - certbot_conf:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+      - selfsigned_certs:/etc/nginx/certs/selfsigned
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   db_data:
+  certbot_conf:
+  certbot_www:
+  selfsigned_certs:

@@ -4,6 +4,11 @@
  * Main entry point
  */
 
+// За reverse proxy (nginx): корректные редиректы и HTTPS за TLS-терминацией
+if (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
+    $_SERVER['HTTPS'] = 'on';
+}
+
 session_name(getenv('SESSION_NAME') ?: 'amnezia_panel_session');
 session_start();
 
