@@ -94,6 +94,44 @@ Nginx сгенерирует **самоподписанный** сертифик
 
 **Без HTTPS:** оставьте `PANEL_DOMAIN` и `PANEL_IP` пустыми — nginx отдаёт панель по HTTP на порту 80.
 
+#### Шпаргалка: обновление на сервере и включение HTTPS по IP
+
+```bash
+# 1. Узнать публичный IP
+curl -4 ifconfig.me
+
+# 2. Перейти в каталог проекта и обновить код
+cd ~/AmneziaVPNphp
+git pull
+chmod +x nginx/docker-entrypoint.sh
+
+# 3. В .env задать (PANEL_DOMAIN и ACME_EMAIL оставить пустыми):
+#    PANEL_IP=203.0.113.5
+nano .env
+
+# 4. Открыть порты
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+
+# 5. Пересобрать nginx (обычный ./update.sh может не пересобрать его)
+docker compose up -d --build
+
+# 6. Проверить
+docker compose logs nginx
+curl -kI https://127.0.0.1
+```
+
+Открыть в браузере: `https://203.0.113.5` (свой IP). При предупреждении браузера: «Дополнительно» → «Перейти на сайт».
+
+| Проблема | Что проверить |
+|----------|----------------|
+| Сайт не открывается | `docker compose ps` — контейнер `nginx` в статусе `Up` |
+| Всё ещё HTTP | В `.env` задан `PANEL_IP`, после правок был `--build` |
+| Ошибка в логах | `docker compose logs nginx` |
+| Порт занят | `sudo ss -tlnp \| grep ':443'` |
+
+После настройки nginx заходите по **`https://IP`**, а не по `http://IP:8082` (8082 — только localhost для отладки).
+
 ### Настройка (`.env`)
 
 ```env
