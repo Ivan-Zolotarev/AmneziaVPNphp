@@ -17,6 +17,7 @@ require_once __DIR__ . '/../vendor/autoload.php';
 require_once __DIR__ . '/../inc/Config.php';
 require_once __DIR__ . '/../inc/DB.php';
 require_once __DIR__ . '/../inc/Auth.php';
+require_once __DIR__ . '/../inc/LoginRateLimit.php';
 require_once __DIR__ . '/../inc/Router.php';
 require_once __DIR__ . '/../inc/View.php';
 require_once __DIR__ . '/../inc/VpnServer.php';
@@ -167,11 +168,19 @@ Router::get('/login', function () {
 Router::post('/login', function () {
     $email = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
-    
+
+    if (LoginRateLimit::isBlocked($email)) {
+        http_response_code(429);
+        View::render('login.twig', ['error' => LoginRateLimit::blockedMessage($email)]);
+        return;
+    }
+
     if (Auth::login($email, $password)) {
+        LoginRateLimit::clearSuccess($email);
         redirect('/dashboard');
     }
-    
+
+    LoginRateLimit::recordFailure($email);
     View::render('login.twig', ['error' => 'Invalid credentials']);
 });
 
@@ -782,13 +791,22 @@ Router::post('/api/auth/token', function () {
         echo json_encode(['error' => 'Email and password are required']);
         return;
     }
+
+    if (LoginRateLimit::isBlocked($email)) {
+        http_response_code(429);
+        echo json_encode(['error' => LoginRateLimit::blockedMessage($email)]);
+        return;
+    }
     
     $user = Auth::getUserByEmail($email);
     if (!$user || !password_verify($password, $user['password_hash'])) {
+        LoginRateLimit::recordFailure($email);
         http_response_code(401);
         echo json_encode(['error' => 'Invalid credentials']);
         return;
     }
+
+    LoginRateLimit::clearSuccess($email);
     
     try {
         $token = JWT::generate($user['id']);

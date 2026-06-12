@@ -226,8 +226,11 @@ QrUtil::pngBase64($payload) → data:image/png;base64,...
 Рекомендуется доработать:
 
 - CSRF‑защита (form tokens)
-- Rate limiting для API
-- Заголовки безопасности (CSP, HSTS и т.п.; HTTPS — nginx + certbot, см. README)
+- Заголовки безопасности (CSP, HSTS и т.п.)
+
+Реализовано:
+
+- Rate limiting / lockout для входа (`/login`, `/api/auth/token`) — см. README
 
 Мониторинг и резервное копирование описаны в `README.md` (разделы Monitoring / Backup & Recovery).
 

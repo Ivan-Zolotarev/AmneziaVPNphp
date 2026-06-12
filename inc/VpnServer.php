@@ -242,12 +242,28 @@ DOCKERFILE;
     }
     
     /**
+     * PostUp/PostDown hooks for wg0.conf — NAT survives container/VPS reboot via wg-quick.
+     */
+    private function getNatIptablesHooks(string $vpnSubnet): array {
+        $postUp = 'OUT_IF=$(ip route show default | awk \'{print $5}\' | head -n1); [ -z "$OUT_IF" ] && OUT_IF=eth0; '
+            . 'iptables -t nat -C POSTROUTING -s ' . $vpnSubnet . ' -o $OUT_IF -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s ' . $vpnSubnet . ' -o $OUT_IF -j MASQUERADE; '
+            . 'iptables -C FORWARD -i %i -o $OUT_IF -s ' . $vpnSubnet . ' -j ACCEPT 2>/dev/null || iptables -A FORWARD -i %i -o $OUT_IF -s ' . $vpnSubnet . ' -j ACCEPT; '
+            . 'iptables -C FORWARD -i $OUT_IF -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -i $OUT_IF -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT';
+
+        $postDown = 'OUT_IF=$(ip route show default | awk \'{print $5}\' | head -n1); [ -z "$OUT_IF" ] && OUT_IF=eth0; '
+            . 'iptables -t nat -D POSTROUTING -s ' . $vpnSubnet . ' -o $OUT_IF -j MASQUERADE 2>/dev/null || true; '
+            . 'iptables -D FORWARD -i %i -o $OUT_IF -s ' . $vpnSubnet . ' -j ACCEPT 2>/dev/null || true; '
+            . 'iptables -D FORWARD -i $OUT_IF -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true';
+
+        return ['postUp' => $postUp, 'postDown' => $postDown];
+    }
+
+    /**
      * Create start script on remote server
      */
     private function createStartScript(): void {
         $script = <<<'BASH'
 #!/usr/bin/env bash
-set -e
 
 echo "Container startup"
 
@@ -259,15 +275,19 @@ for i in {1..30}; do
     sleep 1
 done
 
-# Start daemons if configured
+# Start daemons if configured (PostUp in wg0.conf applies NAT on every wg-quick up)
 if [ -f /opt/amnezia/awg/wg0.conf ]; then
-    # Kill daemons in case of restart
     wg-quick down /opt/amnezia/awg/wg0.conf 2>/dev/null || true
-    wg-quick up /opt/amnezia/awg/wg0.conf
+    if ! wg-quick up /opt/amnezia/awg/wg0.conf; then
+        echo "WireGuard failed to start" >&2
+        exit 1
+    fi
     echo "WireGuard started"
 else
     echo "No wg0.conf found, skipping WireGuard startup"
 fi
+
+set +e
 
 # Enable IPv4 forwarding (inside container namespace)
 echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
@@ -386,6 +406,10 @@ BASH;
         foreach ($awgParams as $key => $value) {
             $wgConfig .= "{$key} = {$value}\n";
         }
+
+        $natHooks = $this->getNatIptablesHooks($this->data['vpn_subnet']);
+        $wgConfig .= "PostUp = {$natHooks['postUp']}\n";
+        $wgConfig .= "PostDown = {$natHooks['postDown']}\n";
         $wgConfig .= "\n";
         
         $escaped = addslashes($wgConfig);
@@ -402,8 +426,9 @@ BASH;
         $this->executeCommand("docker exec -i {$containerName} sh -c 'iptables -A INPUT -i wg0 -j ACCEPT 2>/dev/null || true'", true);
         $this->executeCommand("docker exec -i {$containerName} sh -c 'iptables -A FORWARD -i wg0 -j ACCEPT 2>/dev/null || true'", true);
         $this->executeCommand("docker exec -i {$containerName} sh -c 'iptables -A OUTPUT -o wg0 -j ACCEPT 2>/dev/null || true'", true);
-        $this->executeCommand("docker exec -i {$containerName} sh -c 'iptables -A FORWARD -i wg0 -o eth0 -s 10.8.1.0/24 -j ACCEPT 2>/dev/null || true'", true);
-        $this->executeCommand("docker exec -i {$containerName} sh -c 'iptables -t nat -A POSTROUTING -s 10.8.1.0/24 -o eth0 -j MASQUERADE 2>/dev/null || true'", true);
+        $subnet = $this->data['vpn_subnet'];
+        $this->executeCommand("docker exec -i {$containerName} sh -c 'iptables -A FORWARD -i wg0 -o eth0 -s {$subnet} -j ACCEPT 2>/dev/null || true'", true);
+        $this->executeCommand("docker exec -i {$containerName} sh -c 'iptables -t nat -A POSTROUTING -s {$subnet} -o eth0 -j MASQUERADE 2>/dev/null || true'", true);
         
         sleep(2);
         
