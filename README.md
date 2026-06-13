@@ -13,7 +13,9 @@
 - Генерация QR‑кодов для мобильных приложений
 - Многоязычный интерфейс (русский, английский, испанский, немецкий, французский, китайский)
 - REST API с аутентификацией по JWT
-- Аутентификация пользователей и контроль доступа
+- Аутентификация пользователей и контроль доступа (роли admin / user)
+- **Защита от брутфорса** при входе (веб‑форма и `POST /api/auth/token`)
+- **LDAP** — вход через корпоративный каталог (см. `LDAP_SETUP.md`)
 - **Автоматическая проверка сроков действия и лимитов трафика** по cron
 
 ### Требования
@@ -25,9 +27,9 @@
 
 ```bash
 git clone https://github.com/Ivan-Zolotarev/AmneziaVPNphp.git
-cd AmneziaVPNphp
+cd AmneziaVPNphp          # или, например: /opt/AmneziaVPNphp
 cp .env.example .env
-chmod +x nginx/docker-entrypoint.sh
+chmod +x nginx/docker-entrypoint.sh update.sh
 
 # Docker Compose V2 (рекомендуется)
 docker compose up -d
@@ -101,7 +103,8 @@ Nginx сгенерирует **самоподписанный** сертифик
 curl -4 ifconfig.me
 
 # 2. Перейти в каталог проекта и обновить код
-cd ~/AmneziaVPNphp
+# (часто /opt/AmneziaVPNphp или ~/AmneziaVPNphp — зависит от установки)
+cd /opt/AmneziaVPNphp
 git pull
 chmod +x nginx/docker-entrypoint.sh
 
@@ -134,18 +137,100 @@ curl -kI https://127.0.0.1
 
 ### Настройка (`.env`)
 
+Скопируйте шаблон и отредактируйте под себя:
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Основные переменные:
+
 ```env
+# База данных
 DB_HOST=db
 DB_PORT=3306
 DB_DATABASE=amnezia_panel
 DB_USERNAME=amnezia
-DB_PASSWORD=amnezia123
+DB_PASSWORD=amnezia
+DB_ROOT_PASSWORD=rootpassword
 
+# Учётная запись администратора (создаётся при первом запуске)
 ADMIN_EMAIL=admin@amnez.ia
 ADMIN_PASSWORD=admin123
 
-JWT_SECRET=your-secret-key-change-this
+# JWT для API
+JWT_SECRET=change_this_to_random_secret_key_for_production
+
+# Защита от брутфорса (/login, /api/auth/token)
+LOGIN_MAX_ATTEMPTS=5
+LOGIN_ATTEMPT_WINDOW_MINUTES=15
+LOGIN_LOCKOUT_MINUTES=15
+
+# HTTPS (nginx) — см. разделы выше
+PANEL_DOMAIN=
+PANEL_IP=
+ACME_EMAIL=
 ```
+
+Полный список — в файле `.env.example`.
+
+### Обновление на сервере
+
+Рекомендуемый способ — скрипт `./update.sh`: он делает бэкап БД, `git pull`, `composer install`, применяет новые SQL‑миграции и перезапускает контейнеры.
+
+```bash
+cd /opt/AmneziaVPNphp   # каталог установки
+chmod +x update.sh nginx/docker-entrypoint.sh
+./update.sh
+```
+
+Ручное обновление (как при добавлении новых миграций):
+
+```bash
+cd /opt/AmneziaVPNphp
+git pull
+docker compose exec web composer install --no-interaction
+
+# Применить одну миграцию
+docker compose exec -T db mysql -uroot -p"$(grep '^DB_ROOT_PASSWORD=' .env | cut -d= -f2-)" amnezia_panel \
+  < migrations/014_add_login_rate_limit.sql
+
+docker compose restart web
+# Если менялись nginx/Dockerfile:
+docker compose up -d --build
+```
+
+Проверка, что миграция применена:
+
+```bash
+docker compose exec db mysql -uroot -p"$(grep '^DB_ROOT_PASSWORD=' .env | cut -d= -f2-)" amnezia_panel \
+  -e "SHOW TABLES LIKE 'login_attempts';"
+```
+
+### Защита от брутфорса
+
+Ограничение неудачных попыток входа для **веб‑формы** (`POST /login`) и **получения JWT** (`POST /api/auth/token`).
+
+| Переменная | По умолчанию | Описание |
+|------------|--------------|----------|
+| `LOGIN_MAX_ATTEMPTS` | 5 | Сколько неудачных попыток допускается |
+| `LOGIN_ATTEMPT_WINDOW_MINUTES` | 15 | Окно подсчёта попыток (минуты) |
+| `LOGIN_LOCKOUT_MINUTES` | 15 | Длительность блокировки после превышения лимита |
+
+**Как работает:**
+
+1. Каждая неудачная попытка записывается в таблицу `login_attempts` (IP + email).
+2. Лимит проверяется **отдельно по IP и по email** — срабатывает более строгое условие.
+3. После превышения порога в окне — блокировка на `LOGIN_LOCKOUT_MINUTES` с момента последней неудачной попытки.
+4. Успешный вход сбрасывает счётчик для этого IP и email.
+5. Клиент получает HTTP **429** и сообщение вида: «Слишком много попыток входа. Повторите через N мин.»
+
+За nginx IP берётся из заголовка `X-Forwarded-For` (первый адрес в цепочке).
+
+Требуется миграция `migrations/014_add_login_rate_limit.sql` (применяется автоматически через `./update.sh` или вручную — см. выше).
+
+После изменения `LOGIN_*` в `.env`: `docker compose restart web`.
 
 ### Диск и бинарные логи MySQL
 
@@ -307,6 +392,9 @@ curl -X POST http://localhost:8082/api/auth/token \
   -d "email=admin@amnez.ia&password=admin123"
 ```
 
+При превышении лимита неудачных попыток API вернёт **429** с текстом ошибки (см. раздел «Защита от брутфорса»).  
+Эндпоинт проверяет только локальный пароль в БД; LDAP‑пользователи входят через веб‑форму `/login`.
+
 Использование токена:
 
 ```bash
@@ -394,19 +482,40 @@ docker compose exec web php bin/translate_all.php
 ```text
 public/index.php      - маршруты и входная точка
 inc/                  - основные классы
-  Auth.php            - аутентификация
+  Auth.php            - аутентификация (локальная + LDAP)
+  LoginRateLimit.php  - защита от брутфорса при входе
   DB.php              - подключение к БД
   Router.php          - роутинг
   View.php            - шаблоны Twig
   VpnServer.php       - управление серверами
   VpnClient.php       - управление клиентами
+  LdapSync.php        - синхронизация с LDAP
   Translator.php      - переводы
   JWT.php             - JWT‑аутентификация
   QrUtil.php          - генерация QR‑кодов Amnezia
   PanelImporter.php   - импорт из wg-easy / 3x-ui
+  ServerMonitoring.php - сбор метрик серверов
 templates/            - шаблоны Twig
-migrations/           - SQL‑миграции (выполняются в алфавитном порядке)
+migrations/           - SQL‑миграции (при первом старте БД и через update.sh)
+nginx/                - reverse proxy, HTTPS, certbot
+update.sh             - автоматическое обновление с бэкапом и миграциями
+LDAP_SETUP.md         - настройка LDAP
 ```
+
+---
+
+## Безопасность
+
+| Механизм | Описание |
+|----------|----------|
+| Пароли | `password_hash` / `password_verify` (bcrypt) |
+| SQL | подготовленные выражения (PDO) |
+| XSS | автоэкранирование Twig |
+| Роли | `admin` / `user` |
+| Брутфорс | `LoginRateLimit` — см. раздел «Защита от брутфорса» |
+| LDAP | опционально, см. `LDAP_SETUP.md` |
+
+Рекомендуется дополнительно: CSRF‑токены для форм, заголовки безопасности (CSP, HSTS).
 
 ---
 
