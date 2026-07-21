@@ -133,6 +133,8 @@ class VpnServer {
             // Reload data
             $this->load();
             
+            $this->installNatRecoveryOnHost($this->data['container_name']);
+            
             return [
                 'success' => true,
                 'vpn_port' => $vpnPort,
@@ -259,6 +261,43 @@ DOCKERFILE;
     }
 
     /**
+     * On VPN host: sysctl, ensure_awg_nat.sh, and cron (@reboot + periodic heal).
+     */
+    private function installNatRecoveryOnHost(string $containerName): void {
+        $localScript = dirname(__DIR__) . '/scripts/ensure_awg_nat.sh';
+        if (!is_readable($localScript)) {
+            return;
+        }
+
+        $remoteScript = '/usr/local/bin/amnezia-ensure-awg-nat.sh';
+        $b64 = base64_encode((string)file_get_contents($localScript));
+        $this->executeCommand(
+            "echo " . escapeshellarg($b64) . " | base64 -d > {$remoteScript} && chmod 755 {$remoteScript}",
+            true
+        );
+
+        $this->executeCommand(
+            'grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf 2>/dev/null || '
+            . 'printf "%s\n" "net.ipv4.ip_forward=1" "net.ipv4.conf.all.rp_filter=0" "net.ipv4.conf.default.rp_filter=0" >> /etc/sysctl.conf; '
+            . 'sysctl -p >/dev/null 2>&1 || true',
+            true
+        );
+
+        $marker = 'amnezia-panel-awg-nat';
+        $logFile = '/var/log/amnezia-awg-nat.log';
+        $rebootLine = "@reboot sleep 45 && AWG_CONTAINER_NAME={$containerName} {$remoteScript} >> {$logFile} 2>&1 # {$marker}";
+        $healLine = "*/15 * * * * AWG_CONTAINER_NAME={$containerName} {$remoteScript} >> {$logFile} 2>&1 # {$marker}";
+
+        $cronCmd = '(crontab -l 2>/dev/null | grep -v ' . escapeshellarg($marker) . ' || true; '
+            . 'echo ' . escapeshellarg($rebootLine) . '; '
+            . 'echo ' . escapeshellarg($healLine) . ') | crontab -';
+
+        $this->executeCommand($cronCmd, true);
+        $this->executeCommand("touch {$logFile} 2>/dev/null || true", true);
+        $this->executeCommand("AWG_CONTAINER_NAME={$containerName} {$remoteScript}", true);
+    }
+
+    /**
      * Create start script on remote server
      */
     private function createStartScript(): void {
@@ -266,6 +305,46 @@ DOCKERFILE;
 #!/usr/bin/env bash
 
 echo "Container startup"
+
+apply_nat_rules() {
+    echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+
+    if [ ! -f /opt/amnezia/awg/wg0.conf ]; then
+        echo "No wg0.conf, skip NAT" >&2
+        return 1
+    fi
+
+    VPN_SUBNET="$(grep -m1 '^Address' /opt/amnezia/awg/wg0.conf | cut -d= -f2 | tr -d ' ')"
+    if [ -z "$VPN_SUBNET" ]; then
+        VPN_SUBNET="10.8.1.0/24"
+    fi
+
+    OUT_IF="$(ip route show default 2>/dev/null | awk '{print $5}' | head -n1)"
+    if [ -z "$OUT_IF" ]; then
+        OUT_IF="eth0"
+    fi
+
+    if iptables -t nat -L POSTROUTING -n >/dev/null 2>&1; then
+        IPT="iptables"
+    elif iptables-legacy -t nat -L POSTROUTING -n >/dev/null 2>&1; then
+        IPT="iptables-legacy"
+    else
+        echo "iptables nat unavailable" >&2
+        return 1
+    fi
+
+    $IPT -C INPUT -i wg0 -j ACCEPT 2>/dev/null || $IPT -A INPUT -i wg0 -j ACCEPT
+    $IPT -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || $IPT -A FORWARD -i wg0 -j ACCEPT
+    $IPT -C OUTPUT -o wg0 -j ACCEPT 2>/dev/null || $IPT -A OUTPUT -o wg0 -j ACCEPT
+    $IPT -C FORWARD -i wg0 -o "$OUT_IF" -s "$VPN_SUBNET" -j ACCEPT 2>/dev/null || \
+        $IPT -A FORWARD -i wg0 -o "$OUT_IF" -s "$VPN_SUBNET" -j ACCEPT
+    $IPT -C FORWARD -i "$OUT_IF" -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+        $IPT -A FORWARD -i "$OUT_IF" -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+    $IPT -t nat -C POSTROUTING -s "$VPN_SUBNET" -o "$OUT_IF" -j MASQUERADE 2>/dev/null || \
+        $IPT -t nat -A POSTROUTING -s "$VPN_SUBNET" -o "$OUT_IF" -j MASQUERADE
+
+    echo "NAT applied ($VPN_SUBNET -> $OUT_IF via $IPT)"
+}
 
 # Wait for config if not exists yet
 for i in {1..30}; do
@@ -275,7 +354,7 @@ for i in {1..30}; do
     sleep 1
 done
 
-# Start daemons if configured (PostUp in wg0.conf applies NAT on every wg-quick up)
+# PostUp in wg0.conf also applies NAT; apply_nat_rules is a second pass after wg-quick up
 if [ -f /opt/amnezia/awg/wg0.conf ]; then
     wg-quick down /opt/amnezia/awg/wg0.conf 2>/dev/null || true
     if ! wg-quick up /opt/amnezia/awg/wg0.conf; then
@@ -283,43 +362,10 @@ if [ -f /opt/amnezia/awg/wg0.conf ]; then
         exit 1
     fi
     echo "WireGuard started"
+    apply_nat_rules || echo "NAT apply failed on startup" >&2
 else
     echo "No wg0.conf found, skipping WireGuard startup"
 fi
-
-set +e
-
-# Enable IPv4 forwarding (inside container namespace)
-echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
-
-# Determine VPN subnet from config (fallback to 10.8.1.0/24)
-VPN_SUBNET="$(grep -m1 '^Address' /opt/amnezia/awg/wg0.conf 2>/dev/null | cut -d= -f2 | xargs || true)"
-if [ -z "$VPN_SUBNET" ]; then
-  VPN_SUBNET="10.8.1.0/24"
-fi
-
-# Determine outbound interface (fallback to eth0)
-OUT_IF="$(ip route show default 2>/dev/null | awk '{print $5}' | head -n1 || true)"
-if [ -z "$OUT_IF" ]; then
-  OUT_IF="eth0"
-fi
-
-# Allow traffic on the TUN interface
-iptables -C INPUT -i wg0 -j ACCEPT 2>/dev/null || iptables -A INPUT -i wg0 -j ACCEPT 2>/dev/null || true
-iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i wg0 -j ACCEPT 2>/dev/null || true
-iptables -C OUTPUT -o wg0 -j ACCEPT 2>/dev/null || iptables -A OUTPUT -o wg0 -j ACCEPT 2>/dev/null || true
-
-# Allow forwarding traffic from VPN to outbound interface
-iptables -C FORWARD -i wg0 -o "$OUT_IF" -s "$VPN_SUBNET" -j ACCEPT 2>/dev/null || \
-  iptables -A FORWARD -i wg0 -o "$OUT_IF" -s "$VPN_SUBNET" -j ACCEPT 2>/dev/null || true
-
-# Allow established return traffic back into VPN
-iptables -C FORWARD -i "$OUT_IF" -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
-  iptables -A FORWARD -i "$OUT_IF" -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
-
-# NAT (masquerade) VPN subnet to outbound interface
-iptables -t nat -C POSTROUTING -s "$VPN_SUBNET" -o "$OUT_IF" -j MASQUERADE 2>/dev/null || \
-  iptables -t nat -A POSTROUTING -s "$VPN_SUBNET" -o "$OUT_IF" -j MASQUERADE 2>/dev/null || true
 
 tail -f /dev/null
 BASH;

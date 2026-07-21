@@ -730,6 +730,16 @@ fi
 log ""
 log "${BLUE}[10/10] Finalizing...${NC}"
 
+if [ -f scripts/install_awg_nat_cron.sh ]; then
+    chmod +x scripts/ensure_awg_nat.sh scripts/install_awg_nat_cron.sh 2>/dev/null || true
+    log_info "AWG NAT recovery (cron on host, if amnezia-awg container exists)..."
+    if ./scripts/install_awg_nat_cron.sh 2>&1 | tee -a "$LOG_FILE"; then
+        log_success "AWG NAT recovery configured"
+    else
+        log_warning "AWG NAT cron not installed (no local AWG container or non-root — optional)"
+    fi
+fi
+
 if [ $STASHED -eq 1 ]; then
     log_info "Restoring stashed changes..."
     if git stash pop 2>&1 | tee -a "$LOG_FILE"; then

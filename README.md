@@ -30,6 +30,7 @@ git clone https://github.com/Ivan-Zolotarev/AmneziaVPNphp.git
 cd AmneziaVPNphp          # или, например: /opt/AmneziaVPNphp
 cp .env.example .env
 chmod +x nginx/docker-entrypoint.sh update.sh
+chmod +x scripts/ensure_awg_nat.sh scripts/install_awg_nat_cron.sh 2>/dev/null || true
 
 # Docker Compose V2 (рекомендуется)
 docker compose up -d
@@ -182,6 +183,7 @@ ACME_EMAIL=
 ```bash
 cd /opt/AmneziaVPNphp   # каталог установки
 chmod +x update.sh nginx/docker-entrypoint.sh
+chmod +x scripts/ensure_awg_nat.sh scripts/install_awg_nat_cron.sh 2>/dev/null || true
 ./update.sh
 ```
 
@@ -207,6 +209,33 @@ docker compose up -d --build
 docker compose exec db mysql -uroot -p"$(grep '^DB_ROOT_PASSWORD=' .env | cut -d= -f2-)" amnezia_panel \
   -e "SHOW TABLES LIKE 'login_attempts';"
 ```
+
+### Восстановление NAT (AWG) после перезагрузки VPS
+
+Если панель и контейнер **amnezia-awg** на одном сервере, после reboot иногда пропадает **MASQUERADE** внутри контейнера — VPN поднимается, но клиенты не получают ответы.
+
+Скрипт `./update.sh` пытается установить cron автоматически. Вручную (один раз от root):
+
+```bash
+cd /opt/AmneziaVPNphp
+chmod +x scripts/ensure_awg_nat.sh scripts/install_awg_nat_cron.sh
+./scripts/install_awg_nat_cron.sh
+```
+
+Будет добавлено:
+- `@reboot` — через 45 с после загрузки восстанавливает NAT;
+- каждые **15 минут** — повторная проверка (idempotent).
+
+Лог: `/var/log/amnezia-awg-nat.log`. Проверка:
+
+```bash
+./scripts/ensure_awg_nat.sh
+docker exec amnezia-awg iptables -t nat -L POSTROUTING -n -v | grep MASQUERADE
+```
+
+При **деплое VPN‑сервера через панель** (SSH) те же cron и скрипт ставятся на удалённый хост автоматически.
+
+Другое имя контейнера: `AWG_CONTAINER_NAME=my-awg ./scripts/install_awg_nat_cron.sh`
 
 ### Защита от брутфорса
 
