@@ -409,6 +409,17 @@ if [ $SKIP_BACKUP -eq 0 ]; then
     BACKUP_DIR="backups"
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
     mkdir -p "$BACKUP_DIR"
+    chmod 775 "$BACKUP_DIR" 2>/dev/null || true
+    if [ "$EUID" -eq 0 ]; then
+        chown 33:33 "$BACKUP_DIR" 2>/dev/null || chown www-data:www-data "$BACKUP_DIR" 2>/dev/null || true
+    fi
+
+    SERVER_BACKUP_DIR="storage/server-backups"
+    mkdir -p "$SERVER_BACKUP_DIR"
+    chmod 775 "$SERVER_BACKUP_DIR" 2>/dev/null || true
+    if [ "$EUID" -eq 0 ]; then
+        chown 33:33 "$SERVER_BACKUP_DIR" 2>/dev/null || chown www-data:www-data "$SERVER_BACKUP_DIR" 2>/dev/null || true
+    fi
     
     # Database backup
     log_info "Backing up database..."
@@ -738,6 +749,12 @@ if [ -f scripts/install_awg_nat_cron.sh ]; then
     else
         log_warning "AWG NAT cron not installed (no local AWG container or non-root — optional)"
     fi
+fi
+
+mkdir -p storage/server-backups
+chmod 775 storage/server-backups 2>/dev/null || true
+if [ "$EUID" -eq 0 ]; then
+    chown 33:33 storage/server-backups 2>/dev/null || chown www-data:www-data storage/server-backups 2>/dev/null || true
 fi
 
 if [ $STASHED -eq 1 ]; then

@@ -35,8 +35,10 @@ RUN composer install --no-dev --optimize-autoloader
 COPY apache.conf /etc/apache2/sites-available/000-default.conf
 
 # Set permissions
-RUN chown -R www-data:www-data /var/www/html \
-    && chmod -R 755 /var/www/html/public
+RUN mkdir -p /var/www/html/storage/server-backups \
+    && chown -R www-data:www-data /var/www/html \
+    && chmod -R 755 /var/www/html/public \
+    && chmod 775 /var/www/html/storage/server-backups
 
 # Setup cron jobs
 RUN echo "0 * * * * www-data cd /var/www/html && /usr/local/bin/php bin/check_expired_clients.php >> /var/log/cron.log 2>&1" > /etc/cron.d/amnezia-cron \

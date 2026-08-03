@@ -36,6 +36,12 @@ chmod +x scripts/ensure_awg_nat.sh scripts/install_awg_nat_cron.sh 2>/dev/null |
 docker compose up -d
 docker compose exec web composer install
 
+# Каталог для JSON-бэкапов серверов (панель)
+mkdir -p storage/server-backups
+chmod 775 storage/server-backups
+# www-data в контейнере = uid 33
+sudo chown 33:33 storage/server-backups 2>/dev/null || true
+
 # Старый Docker Compose V1
 docker-compose up -d
 docker-compose exec web composer install

@@ -40,5 +40,7 @@ build/
 *.bak
 backup/
 backups/
+storage/server-backups/*
+!storage/server-backups/.gitkeep
 TEST_RESULTS.md
 LDAP_FEATURE.md

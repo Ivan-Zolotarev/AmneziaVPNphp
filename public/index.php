@@ -1077,7 +1077,7 @@ Router::post('/api/servers/{id}/backup', function ($params) {
             'success' => true,
             'backup' => $backup
         ]);
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
         http_response_code(500);
         echo json_encode(['error' => $e->getMessage()]);
     }
@@ -1110,7 +1110,7 @@ Router::get('/api/servers/{id}/backups', function ($params) {
             'backups' => $backups,
             'count' => count($backups)
         ]);
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
         http_response_code(500);
         echo json_encode(['error' => $e->getMessage()]);
     }

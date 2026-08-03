@@ -539,6 +539,29 @@ BASH;
     }
     
     /**
+     * Directory for panel server backup JSON files (separate from update.sh SQL dumps in backups/).
+     */
+    private static function getBackupDir(): string {
+        return dirname(__DIR__) . '/storage/server-backups';
+    }
+
+    /**
+     * Ensure backup directory exists and is writable by the web server.
+     */
+    private static function ensureBackupDirectory(): void {
+        $dir = self::getBackupDir();
+        if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+            throw new Exception('Cannot create backup directory: ' . $dir);
+        }
+        if (!is_writable($dir)) {
+            throw new Exception(
+                'Backup directory is not writable: ' . $dir
+                . '. Run: mkdir -p storage/server-backups && chown www-data:www-data storage/server-backups'
+            );
+        }
+    }
+
+    /**
      * Create backup of server configuration and all clients
      * 
      * @param int $userId User who creates the backup
@@ -552,13 +575,9 @@ BASH;
         
         $pdo = DB::conn();
         $backupName = 'backup_' . $this->serverId . '_' . date('Y-m-d_His') . '.json';
-        $backupDir = '/var/www/html/backups';
+        self::ensureBackupDirectory();
+        $backupDir = self::getBackupDir();
         $backupPath = $backupDir . '/' . $backupName;
-        
-        // Create backups directory if not exists
-        if (!is_dir($backupDir)) {
-            mkdir($backupDir, 0755, true);
-        }
         
         try {
             // Get all clients for this server
@@ -571,6 +590,12 @@ BASH;
             $stmt->execute([$this->serverId]);
             $clients = $stmt->fetchAll();
             
+            $awgParams = $this->data['awg_params'];
+            if (is_string($awgParams)) {
+                $decoded = json_decode($awgParams, true);
+                $awgParams = is_array($decoded) ? $decoded : $awgParams;
+            }
+            
             // Prepare backup data
             $backupData = [
                 'server' => [
@@ -582,7 +607,7 @@ BASH;
                     'container_name' => $this->data['container_name'],
                     'server_public_key' => $this->data['server_public_key'],
                     'preshared_key' => $this->data['preshared_key'],
-                    'awg_params' => $this->data['awg_params'],
+                    'awg_params' => $awgParams,
                 ],
                 'clients' => $clients,
                 'backup_date' => date('Y-m-d H:i:s'),
@@ -590,10 +615,22 @@ BASH;
             ];
             
             // Write backup to file
-            $json = json_encode($backupData, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-            file_put_contents($backupPath, $json);
+            $json = json_encode(
+                $backupData,
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
+            );
+            if ($json === false) {
+                throw new Exception('Failed to encode backup JSON: ' . json_last_error_msg());
+            }
+            
+            if (file_put_contents($backupPath, $json) === false) {
+                throw new Exception('Failed to write backup file: ' . $backupPath);
+            }
             
             $backupSize = filesize($backupPath);
+            if ($backupSize === false) {
+                throw new Exception('Failed to read backup file size');
+            }
             
             // Insert backup record
             $stmt = $pdo->prepare('
@@ -615,16 +652,15 @@ BASH;
             
             return (int)$pdo->lastInsertId();
             
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             // Mark backup as failed
-            if (isset($stmt)) {
-                $stmt = $pdo->prepare('
+            try {
+                $failStmt = $pdo->prepare('
                     INSERT INTO server_backups 
                     (server_id, backup_name, backup_path, backup_type, status, error_message, created_by) 
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 ');
-                
-                $stmt->execute([
+                $failStmt->execute([
                     $this->serverId,
                     $backupName,
                     $backupPath,
@@ -633,9 +669,11 @@ BASH;
                     $e->getMessage(),
                     $userId
                 ]);
+            } catch (Throwable $ignored) {
+                // ignore secondary failure
             }
             
-            throw $e;
+            throw $e instanceof Exception ? $e : new Exception($e->getMessage(), 0, $e);
         }
     }
     
