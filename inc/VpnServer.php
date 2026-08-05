@@ -777,7 +777,7 @@ BASH;
                 ]);
                 
                 // Add client to server container
-                VpnClient::addClientToServer($this->data, $clientData['public_key'], $clientData['client_ip']);
+                VpnClient::addClientToServer($this->data, $clientData['public_key'], $clientData['client_ip'], $clientData['name']);
                 
                 $restored++;
                 
