@@ -179,8 +179,11 @@ class VpnClient {
             }
         }
         
-        // Find next free IP starting from .1
-        for ($i = 1; $i <= 253; $i++) {
+        // Reserve .1 — often conflicts with server-side routing on fresh deploys
+        $used[long2ip($networkLong + 1)] = true;
+
+        // Find next free IP starting from .2
+        for ($i = 2; $i <= 253; $i++) {
             $candidate = long2ip($networkLong + $i);
             if (!isset($used[$candidate])) {
                 return $candidate;
@@ -402,11 +405,14 @@ class VpnClient {
         $peerBlock .= "PresharedKey = {$serverData['preshared_key']}\n";
         $peerBlock .= "AllowedIPs = {$clientIP}/32\n";
         
+        $existingConfig = self::readWgConfigFromServer($serverData);
+        self::assertValidWgConfigContent($existingConfig);
+
         self::writeFileInContainer(
             $serverData,
             $containerName,
             '/opt/amnezia/awg/wg0.conf',
-            self::readWgConfigFromServer($serverData) . $peerBlock
+            $existingConfig . $peerBlock
         );
         
         self::applyWgSyncconf($serverData);
@@ -421,9 +427,34 @@ class VpnClient {
         $syncCmd = sprintf(
             "docker exec -i %s bash -lc %s",
             $containerName,
-            escapeshellarg("wg syncconf wg0 <(wg-quick strip /opt/amnezia/awg/wg0.conf)")
+            escapeshellarg(self::wgQuickEnvPrefix() . "wg syncconf wg0 <(wg-quick strip /opt/amnezia/awg/wg0.conf)")
         );
         self::executeServerCommand($serverData, $syncCmd, true);
+    }
+
+    /**
+     * AmneziaWG requires userspace wireguard-go when kernel WireGuard is present.
+     */
+    public static function wgQuickEnvPrefix(): string
+    {
+        return 'WG_QUICK_USERSPACE_IMPLEMENTATION=wireguard-go ';
+    }
+
+    /**
+     * Bring up wg0 from wg0.conf on the remote AWG container.
+     */
+    public static function wgQuickUp(array $serverData, string $configPath = '/opt/amnezia/awg/wg0.conf'): void
+    {
+        $containerName = $serverData['container_name'];
+        $cmd = sprintf(
+            "docker exec -i %s sh -c %s",
+            escapeshellarg($containerName),
+            escapeshellarg(self::wgQuickEnvPrefix() . 'wg-quick up ' . $configPath . ' 2>&1')
+        );
+        $out = self::executeServerCommand($serverData, $cmd, true);
+        if (stripos($out, 'Configuration parsing error') !== false) {
+            throw new Exception('wg-quick failed to parse wg0.conf: ' . trim($out));
+        }
     }
     
     /**
@@ -460,11 +491,14 @@ class VpnClient {
             ];
         }
         
-        // Save back
+        // Save back via stdin (safe for JSON with quotes/special chars)
         $newTableJson = json_encode($table, JSON_PRETTY_PRINT);
-        $escaped = addslashes($newTableJson);
-        $updateCmd = sprintf("docker exec -i %s sh -c 'echo \"%s\" > /opt/amnezia/awg/clientsTable'", $containerName, $escaped);
-        self::executeServerCommand($serverData, $updateCmd, true);
+        self::writeFileInContainer(
+            $serverData,
+            $containerName,
+            '/opt/amnezia/awg/clientsTable',
+            $newTableJson
+        );
     }
     
     /**
@@ -721,10 +755,29 @@ class VpnClient {
     }
 
     /**
+     * wg0.conf must begin with [Interface]; catches broken echo/shell writes.
+     */
+    public static function assertValidWgConfigContent(string $content): void
+    {
+        $trimmed = ltrim($content);
+        if ($trimmed === '' || !str_starts_with($trimmed, '[Interface]')) {
+            throw new Exception('Invalid wg0.conf: expected [Interface] section at file start');
+        }
+    }
+
+    /**
+     * Verify wg0.conf on the remote AWG container parses as WireGuard config.
+     */
+    public static function assertValidWgConfigOnServer(array $serverData): void
+    {
+        self::assertValidWgConfigContent(self::readWgConfigFromServer($serverData));
+    }
+
+    /**
      * Записывает файл внутрь контейнера AWG потоком (stdin).
      * Так мы не портим большие файлы из-за кавычек/экранирования и лимитов длины команды.
      */
-    private static function writeFileInContainer(array $serverData, string $containerName, string $path, string $content): void
+    public static function writeFileInContainer(array $serverData, string $containerName, string $path, string $content): void
     {
         // Добавляем перевод строки в конец (для файлов, которые пишем через cat)
         if ($content !== '' && !str_ends_with($content, "\n")) {
