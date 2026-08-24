@@ -275,7 +275,19 @@ class VpnClient {
     private static function readWgConfigFromServer(array $serverData): string {
         $containerName = $serverData['container_name'];
         $readCmd = sprintf("docker exec -i %s cat /opt/amnezia/awg/wg0.conf", $containerName);
-        return self::executeServerCommand($serverData, $readCmd, true);
+        return self::stripToInterfaceSection(self::executeServerCommand($serverData, $readCmd, true));
+    }
+
+    /**
+     * SSH/docker often prepend warnings to stdout; wg0.conf must start at [Interface].
+     */
+    private static function stripToInterfaceSection(string $content): string {
+        $content = preg_replace('/^\xEF\xBB\xBF/', '', $content) ?? $content;
+        $pos = stripos($content, '[Interface]');
+        if ($pos === false) {
+            return $content;
+        }
+        return substr($content, $pos);
     }
     
     /**
@@ -433,11 +445,12 @@ class VpnClient {
     }
 
     /**
-     * AmneziaWG requires userspace wireguard-go when kernel WireGuard is present.
+     * Official amneziavpn/amnezia-wg image ships amneziawg-go (not wireguard-go).
+     * Vanilla wireguard-go / kernel WG ignore Jc/S1/H1 and the client handshake never completes.
      */
     public static function wgQuickEnvPrefix(): string
     {
-        return 'WG_QUICK_USERSPACE_IMPLEMENTATION=wireguard-go ';
+        return 'WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go ';
     }
 
     /**
@@ -759,7 +772,7 @@ class VpnClient {
      */
     public static function assertValidWgConfigContent(string $content): void
     {
-        $trimmed = ltrim($content);
+        $trimmed = ltrim(self::stripToInterfaceSection($content));
         if ($trimmed === '' || !str_starts_with($trimmed, '[Interface]')) {
             throw new Exception('Invalid wg0.conf: expected [Interface] section at file start');
         }

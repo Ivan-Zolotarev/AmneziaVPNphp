@@ -354,8 +354,8 @@ for i in {1..30}; do
     sleep 1
 done
 
-# AmneziaWG obfuscation requires wireguard-go, not kernel WireGuard
-export WG_QUICK_USERSPACE_IMPLEMENTATION=wireguard-go
+# AmneziaWG obfuscation requires amneziawg-go, not kernel WireGuard / vanilla wireguard-go
+export WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go
 
 # PostUp in wg0.conf also applies NAT; apply_nat_rules is a second pass after wg-quick up
 if [ -f /opt/amnezia/awg/wg0.conf ]; then
@@ -404,7 +404,7 @@ BASH;
         $containerName = $this->data['container_name'];
         
         $runCmd = sprintf(
-            'docker run -d --log-driver none --restart always --privileged --cap-add=NET_ADMIN --cap-add=SYS_MODULE -p %d:%d/udp -v /lib/modules:/lib/modules --name %s %s',
+            'docker run -d --log-driver none --restart always --privileged --cap-add=NET_ADMIN --cap-add=SYS_MODULE --device /dev/net/tun --sysctl net.ipv4.ip_forward=1 -p %d:%d/udp -v /lib/modules:/lib/modules --name %s %s',
             $vpnPort,
             $vpnPort,
             $containerName,
@@ -412,6 +412,10 @@ BASH;
         );
         
         $this->executeCommand($runCmd, true);
+        $this->executeCommand(
+            "ufw allow {$vpnPort}/udp >/dev/null 2>&1 || iptables -C INPUT -p udp --dport {$vpnPort} -j ACCEPT >/dev/null 2>&1 || iptables -I INPUT -p udp --dport {$vpnPort} -j ACCEPT >/dev/null 2>&1 || true",
+            true
+        );
         sleep(3); // Wait for container to start
     }
     
@@ -469,7 +473,7 @@ BASH;
         // Create clientsTable
         VpnClient::writeFileInContainer($this->data, $containerName, '/opt/amnezia/awg/clientsTable', '[]');
 
-        // Start WireGuard (AmneziaWG via wireguard-go)
+        // Start WireGuard (AmneziaWG via amneziawg-go)
         VpnClient::wgQuickUp($this->data);
         $this->assertWgInterfaceRunning($containerName, $vpnPort);
         
