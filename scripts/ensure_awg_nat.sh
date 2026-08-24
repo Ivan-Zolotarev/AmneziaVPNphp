@@ -37,7 +37,9 @@ apply_nat() {
     fi
 
     if ! wg show wg0 >/dev/null 2>&1; then
-        WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go wg-quick up /opt/amnezia/awg/wg0.conf 2>/dev/null || true
+        IMPL=wireguard-go
+        command -v amneziawg-go >/dev/null 2>&1 && IMPL=amneziawg-go
+        WG_QUICK_USERSPACE_IMPLEMENTATION="$IMPL" wg-quick up /opt/amnezia/awg/wg0.conf 2>/dev/null || true
     fi
 
     VPN_SUBNET="$(grep -m1 '^Address' /opt/amnezia/awg/wg0.conf | cut -d= -f2 | tr -d ' ')"

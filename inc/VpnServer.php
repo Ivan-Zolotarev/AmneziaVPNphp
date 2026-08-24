@@ -354,8 +354,12 @@ for i in {1..30}; do
     sleep 1
 done
 
-# AmneziaWG obfuscation requires amneziawg-go, not kernel WireGuard / vanilla wireguard-go
-export WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go
+# Prefer amneziawg-go; older images ship the same daemon as wireguard-go
+if command -v amneziawg-go >/dev/null 2>&1; then
+    export WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go
+else
+    export WG_QUICK_USERSPACE_IMPLEMENTATION=wireguard-go
+fi
 
 # PostUp in wg0.conf also applies NAT; apply_nat_rules is a second pass after wg-quick up
 if [ -f /opt/amnezia/awg/wg0.conf ]; then

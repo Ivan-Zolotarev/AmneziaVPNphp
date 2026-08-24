@@ -445,12 +445,12 @@ class VpnClient {
     }
 
     /**
-     * Official amneziavpn/amnezia-wg image ships amneziawg-go (not wireguard-go).
-     * Vanilla wireguard-go / kernel WG ignore Jc/S1/H1 and the client handshake never completes.
+     * Older amnezia-wg images install the obfuscated daemon as wireguard-go;
+     * current images use amneziawg-go. Kernel WG must not be used.
      */
     public static function wgQuickEnvPrefix(): string
     {
-        return 'WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go ';
+        return 'WG_QUICK_USERSPACE_IMPLEMENTATION=$(command -v amneziawg-go >/dev/null 2>&1 && echo amneziawg-go || echo wireguard-go) ';
     }
 
     /**
