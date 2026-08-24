@@ -201,22 +201,41 @@ class VpnServer {
     }
     
     /**
-     * Find free UDP port on remote server
+     * Prefer UDP 443/80 (pass Russian DPI / geo filters); TCP 443 on the panel does not occupy UDP 443.
      */
     private function findFreeUdpPort(): int {
-        $min = 30000;
-        $max = 65000;
-        
-        for ($attempt = 0; $attempt < 30; $attempt++) {
-            $candidate = random_int($min, $max);
-            $cmd = "ss -lun | awk '{print \$4}' | grep -E ':(" . $candidate . ")($| )' || true";
-            $out = $this->executeCommand($cmd, false);
-            if (trim($out) === '') {
+        $preferredRaw = (string)Config::get('DEFAULT_VPN_UDP_PORTS', '443,80,51820');
+        $preferred = [];
+        foreach (explode(',', $preferredRaw) as $part) {
+            $n = (int)trim($part);
+            if ($n > 0 && $n <= 65535) {
+                $preferred[] = $n;
+            }
+        }
+
+        foreach ($preferred as $candidate) {
+            if ($this->isUdpPortFree($candidate)) {
                 return $candidate;
             }
         }
-        
+
+        $min = (int)Config::get('DEFAULT_VPN_PORT_MIN', 30000);
+        $max = (int)Config::get('DEFAULT_VPN_PORT_MAX', 65000);
+
+        for ($attempt = 0; $attempt < 30; $attempt++) {
+            $candidate = random_int($min, $max);
+            if ($this->isUdpPortFree($candidate)) {
+                return $candidate;
+            }
+        }
+
         throw new Exception('Could not find free UDP port');
+    }
+
+    private function isUdpPortFree(int $port): bool {
+        $cmd = "ss -lun | awk '{print \$4}' | grep -E ':(" . $port . ")($| )' || true";
+        $out = $this->executeCommand($cmd, false);
+        return trim($out) === '';
     }
     
     /**
