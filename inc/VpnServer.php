@@ -354,6 +354,9 @@ for i in {1..30}; do
     sleep 1
 done
 
+# AmneziaWG obfuscation requires wireguard-go, not kernel WireGuard
+export WG_QUICK_USERSPACE_IMPLEMENTATION=wireguard-go
+
 # PostUp in wg0.conf also applies NAT; apply_nat_rules is a second pass after wg-quick up
 if [ -f /opt/amnezia/awg/wg0.conf ]; then
     wg-quick down /opt/amnezia/awg/wg0.conf 2>/dev/null || true
@@ -458,15 +461,17 @@ BASH;
         $wgConfig .= "PostDown = {$natHooks['postDown']}\n";
         $wgConfig .= "\n";
         
-        $escaped = addslashes($wgConfig);
-        $this->executeCommand("docker exec -i {$containerName} sh -c 'echo \"{$escaped}\" > /opt/amnezia/awg/wg0.conf'", true);
+        VpnClient::assertValidWgConfigContent($wgConfig);
+        VpnClient::writeFileInContainer($this->data, $containerName, '/opt/amnezia/awg/wg0.conf', $wgConfig);
         $this->executeCommand("docker exec -i {$containerName} chmod 600 /opt/amnezia/awg/wg0.conf", true);
-        
+        VpnClient::assertValidWgConfigOnServer($this->data);
+
         // Create clientsTable
-        $this->executeCommand("docker exec -i {$containerName} sh -c 'echo \"[]\" > /opt/amnezia/awg/clientsTable'", true);
-        
-        // Start WireGuard
-        $this->executeCommand("docker exec -i {$containerName} wg-quick up /opt/amnezia/awg/wg0.conf 2>&1", true);
+        VpnClient::writeFileInContainer($this->data, $containerName, '/opt/amnezia/awg/clientsTable', '[]');
+
+        // Start WireGuard (AmneziaWG via wireguard-go)
+        VpnClient::wgQuickUp($this->data);
+        $this->assertWgInterfaceRunning($containerName, $vpnPort);
         
         // Apply firewall rules
         $this->executeCommand("docker exec -i {$containerName} sh -c 'iptables -A INPUT -i wg0 -j ACCEPT 2>/dev/null || true'", true);
@@ -483,6 +488,23 @@ BASH;
             'preshared_key' => $psk,
             'awg_params' => $awgParams
         ];
+    }
+
+    /**
+     * Fail deploy early if wg0 did not come up (empty/broken wg0.conf, wrong userspace WG).
+     */
+    private function assertWgInterfaceRunning(string $containerName, int $vpnPort): void
+    {
+        $listenPort = trim($this->executeCommand(
+            "docker exec -i {$containerName} wg show wg0 listen-port 2>&1",
+            true
+        ));
+
+        if ((int)$listenPort !== $vpnPort) {
+            throw new Exception(
+                "WireGuard did not start on port {$vpnPort} (wg show listen-port: " . ($listenPort ?: 'empty') . ")"
+            );
+        }
     }
     
     /**
@@ -777,7 +799,7 @@ BASH;
                 ]);
                 
                 // Add client to server container
-                VpnClient::addClientToServer($this->data, $clientData['public_key'], $clientData['client_ip']);
+                VpnClient::addClientToServer($this->data, $clientData['public_key'], $clientData['client_ip'], $clientData['name']);
                 
                 $restored++;
                 

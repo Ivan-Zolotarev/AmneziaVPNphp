@@ -56,7 +56,7 @@ class VpnClient {
         $containerName = $serverData['container_name'];
         $keys = self::generateClientKeys($serverData, $name);
         
-        // Get next available IP
+        // Get next available IP (DB + live wg0.conf on server)
         $clientIP = self::getNextClientIP($serverData);
         
         // Get AWG parameters from server
@@ -73,16 +73,13 @@ class VpnClient {
             $awgParams
         );
         
-        // Add client to server
-        self::addClientToServer($serverData, $keys['public'], $clientIP);
-        
         // Generate QR code
         $qrCode = self::generateQRCode($config);
         
         // Calculate expiration date
         $expiresAt = $expiresInDays ? date('Y-m-d H:i:s', strtotime("+{$expiresInDays} days")) : null;
         
-        // Insert into database
+        // Reserve IP in DB first so concurrent creates cannot pick the same address
         $stmt = $pdo->prepare('
             INSERT INTO vpn_clients 
             (server_id, user_id, name, client_ip, public_key, private_key, preshared_key, config, qr_code, status, expires_at) 
@@ -103,7 +100,17 @@ class VpnClient {
             $expiresAt
         ]);
         
-        return (int)$pdo->lastInsertId();
+        $clientId = (int)$pdo->lastInsertId();
+        
+        // Add client to server after DB insert; roll back DB row if server sync fails
+        try {
+            self::addClientToServer($serverData, $keys['public'], $clientIP, $name);
+        } catch (Exception $e) {
+            $pdo->prepare('DELETE FROM vpn_clients WHERE id = ?')->execute([$clientId]);
+            throw $e;
+        }
+        
+        return $clientId;
     }
     
     /**
@@ -147,23 +154,36 @@ class VpnClient {
     private static function getNextClientIP(array $serverData): string {
         $pdo = DB::conn();
         
-        // Get used IPs from database
+        // Get used IPs from database (all statuses — disabled clients keep their IP)
         $stmt = $pdo->prepare('SELECT client_ip FROM vpn_clients WHERE server_id = ?');
         $stmt->execute([$serverData['id']]);
         $usedIPs = $stmt->fetchAll(PDO::FETCH_COLUMN);
         
+        // Merge with IPs already present in live wg0.conf (covers manual edits / import drift)
+        foreach (self::getUsedIPsFromServer($serverData) as $serverIp) {
+            $usedIPs[] = $serverIp;
+        }
+        
         // Parse subnet
         $parts = explode('/', $serverData['vpn_subnet']);
         $networkLong = ip2long($parts[0]);
-        
-        // Reserve network address
-        $used = ['10.8.1.0' => true];
-        foreach ($usedIPs as $ip) {
-            $used[$ip] = true;
+        if ($networkLong === false) {
+            throw new Exception('Invalid VPN subnet configured for server');
         }
         
-        // Find next free IP starting from .1
-        for ($i = 1; $i <= 253; $i++) {
+        // Reserve network address from actual subnet (not hardcoded)
+        $used = [self::getNetworkAddress($serverData['vpn_subnet']) => true];
+        foreach ($usedIPs as $ip) {
+            if ($ip !== '') {
+                $used[$ip] = true;
+            }
+        }
+        
+        // Reserve .1 — often conflicts with server-side routing on fresh deploys
+        $used[long2ip($networkLong + 1)] = true;
+
+        // Find next free IP starting from .2
+        for ($i = 2; $i <= 253; $i++) {
             $candidate = long2ip($networkLong + $i);
             if (!isset($used[$candidate])) {
                 return $candidate;
@@ -171,6 +191,163 @@ class VpnClient {
         }
         
         throw new Exception('No free IP addresses in subnet');
+    }
+    
+    /**
+     * Network address from CIDR (e.g. 10.8.1.0/24 -> 10.8.1.0)
+     */
+    private static function getNetworkAddress(string $vpnSubnet): string {
+        $parts = explode('/', $vpnSubnet);
+        return $parts[0];
+    }
+    
+    /**
+     * Host IP from AllowedIPs value (e.g. 10.8.1.12/32 -> 10.8.1.12)
+     */
+    private static function extractPeerHostIp(string $allowedIps): ?string {
+        $first = trim(explode(',', $allowedIps)[0]);
+        if ($first === '') {
+            return null;
+        }
+        $parts = explode('/', $first);
+        return $parts[0] !== '' ? $parts[0] : null;
+    }
+    
+    /**
+     * Parse wg0.conf into interface settings and peer blocks
+     *
+     * @return array{interface: array<string, string>, peers: array<int, array<string, string>>}
+     */
+    private static function parseWgConfig(string $content): array {
+        $interface = [];
+        $peers = [];
+        $section = null;
+        $currentPeer = null;
+        
+        $flushPeer = static function () use (&$peers, &$currentPeer): void {
+            if ($currentPeer !== null && !empty($currentPeer['PublicKey'])) {
+                $peers[] = $currentPeer;
+            }
+            $currentPeer = null;
+        };
+        
+        foreach (preg_split('/\r\n|\r|\n/', $content) as $line) {
+            $trimmed = trim($line);
+            
+            if ($trimmed === '[Interface]') {
+                $flushPeer();
+                $section = 'interface';
+                continue;
+            }
+            if ($trimmed === '[Peer]') {
+                $flushPeer();
+                $section = 'peer';
+                $currentPeer = [];
+                continue;
+            }
+            if ($trimmed === '' || strpos($trimmed, '#') === 0) {
+                continue;
+            }
+            
+            $parts = explode('=', $line, 2);
+            if (count($parts) !== 2) {
+                continue;
+            }
+            
+            $key = trim($parts[0]);
+            $value = trim($parts[1]);
+            
+            if ($section === 'interface') {
+                $interface[$key] = $value;
+            } elseif ($section === 'peer' && $currentPeer !== null) {
+                $currentPeer[$key] = $value;
+            }
+        }
+        
+        $flushPeer();
+        
+        return ['interface' => $interface, 'peers' => $peers];
+    }
+    
+    /**
+     * Read wg0.conf from the remote AWG container
+     */
+    private static function readWgConfigFromServer(array $serverData): string {
+        $containerName = $serverData['container_name'];
+        $readCmd = sprintf("docker exec -i %s cat /opt/amnezia/awg/wg0.conf", $containerName);
+        return self::executeServerCommand($serverData, $readCmd, true);
+    }
+    
+    /**
+     * Parsed peer list from live server config
+     *
+     * @return array<int, array{public_key: string, allowed_ips: string, client_ip: ?string}>
+     */
+    private static function getServerPeers(array $serverData): array {
+        $config = self::readWgConfigFromServer($serverData);
+        $parsed = self::parseWgConfig($config);
+        $result = [];
+        
+        foreach ($parsed['peers'] as $peer) {
+            $allowedIps = $peer['AllowedIPs'] ?? '';
+            $result[] = [
+                'public_key' => $peer['PublicKey'],
+                'allowed_ips' => $allowedIps,
+                'client_ip' => self::extractPeerHostIp($allowedIps),
+            ];
+        }
+        
+        return $result;
+    }
+    
+    /**
+     * Client tunnel IPs already assigned in wg0.conf
+     *
+     * @return string[]
+     */
+    private static function getUsedIPsFromServer(array $serverData): array {
+        $ips = [];
+        foreach (self::getServerPeers($serverData) as $peer) {
+            if (!empty($peer['client_ip'])) {
+                $ips[] = $peer['client_ip'];
+            }
+        }
+        return $ips;
+    }
+    
+    /**
+     * Ensure new peer does not collide with an existing IP/key mapping on the server
+     */
+    private static function validatePeerAssignment(array $serverData, string $publicKey, string $clientIP): void {
+        foreach (self::getServerPeers($serverData) as $peer) {
+            $existingIp = $peer['client_ip'];
+            $existingKey = $peer['public_key'];
+            
+            if ($existingIp === $clientIP && $existingKey !== $publicKey) {
+                throw new Exception(
+                    "IP {$clientIP} is already assigned to another peer on the server (key {$existingKey}). " .
+                    'Refusing to overwrite an active peer.'
+                );
+            }
+            
+            if ($existingKey === $publicKey && $existingIp !== null && $existingIp !== $clientIP) {
+                throw new Exception(
+                    "Public key already exists on the server with IP {$existingIp}, cannot assign {$clientIP}."
+                );
+            }
+        }
+    }
+    
+    /**
+     * Whether wg0.conf already contains this exact peer (same key + IP)
+     */
+    private static function peerExistsOnServer(array $serverData, string $publicKey, string $clientIP): bool {
+        foreach (self::getServerPeers($serverData) as $peer) {
+            if ($peer['public_key'] === $publicKey && $peer['client_ip'] === $clientIP) {
+                return true;
+            }
+        }
+        return false;
     }
     
     /**
@@ -210,8 +387,17 @@ class VpnClient {
     /**
      * Add client to server using official method (append + wg syncconf)
      */
-    private static function addClientToServer(array $serverData, string $publicKey, string $clientIP): void {
+    public static function addClientToServer(array $serverData, string $publicKey, string $clientIP, ?string $clientName = null): void {
         $containerName = $serverData['container_name'];
+        $displayName = $clientName ?? $clientIP;
+        
+        self::validatePeerAssignment($serverData, $publicKey, $clientIP);
+        
+        if (self::peerExistsOnServer($serverData, $publicKey, $clientIP)) {
+            self::applyWgSyncconf($serverData);
+            self::updateClientsTable($serverData, $publicKey, $displayName);
+            return;
+        }
         
         // Build peer block
         $peerBlock = "\n[Peer]\n";
@@ -219,27 +405,56 @@ class VpnClient {
         $peerBlock .= "PresharedKey = {$serverData['preshared_key']}\n";
         $peerBlock .= "AllowedIPs = {$clientIP}/32\n";
         
-        $escaped = addslashes($peerBlock);
-        $tempFile = '/tmp/' . bin2hex(random_bytes(8)) . '.tmp';
+        $existingConfig = self::readWgConfigFromServer($serverData);
+        self::assertValidWgConfigContent($existingConfig);
+
+        self::writeFileInContainer(
+            $serverData,
+            $containerName,
+            '/opt/amnezia/awg/wg0.conf',
+            $existingConfig . $peerBlock
+        );
         
-        // Create temp file
-        $cmd1 = sprintf("docker exec -i %s sh -c 'echo \"%s\" > %s'", $containerName, $escaped, $tempFile);
-        self::executeServerCommand($serverData, $cmd1, true);
-        
-        // Append to wg0.conf
-        $cmd2 = sprintf("docker exec -i %s sh -c 'cat %s >> /opt/amnezia/awg/wg0.conf'", $containerName, $tempFile);
-        self::executeServerCommand($serverData, $cmd2, true);
-        
-        // Apply via wg syncconf
-        $cmd3 = sprintf("docker exec -i %s bash -c 'wg syncconf wg0 <(wg-quick strip /opt/amnezia/awg/wg0.conf)'", $containerName);
-        self::executeServerCommand($serverData, $cmd3, true);
-        
-        // Remove temp file
-        $cmd4 = sprintf("docker exec -i %s rm -f %s", $containerName, $tempFile);
-        self::executeServerCommand($serverData, $cmd4, true);
-        
-        // Update clientsTable
-        self::updateClientsTable($serverData, $publicKey, $clientIP);
+        self::applyWgSyncconf($serverData);
+        self::updateClientsTable($serverData, $publicKey, $displayName);
+    }
+    
+    /**
+     * Apply in-memory WireGuard config from wg0.conf without rewriting AWG params
+     */
+    private static function applyWgSyncconf(array $serverData): void {
+        $containerName = $serverData['container_name'];
+        $syncCmd = sprintf(
+            "docker exec -i %s bash -lc %s",
+            $containerName,
+            escapeshellarg(self::wgQuickEnvPrefix() . "wg syncconf wg0 <(wg-quick strip /opt/amnezia/awg/wg0.conf)")
+        );
+        self::executeServerCommand($serverData, $syncCmd, true);
+    }
+
+    /**
+     * AmneziaWG requires userspace wireguard-go when kernel WireGuard is present.
+     */
+    public static function wgQuickEnvPrefix(): string
+    {
+        return 'WG_QUICK_USERSPACE_IMPLEMENTATION=wireguard-go ';
+    }
+
+    /**
+     * Bring up wg0 from wg0.conf on the remote AWG container.
+     */
+    public static function wgQuickUp(array $serverData, string $configPath = '/opt/amnezia/awg/wg0.conf'): void
+    {
+        $containerName = $serverData['container_name'];
+        $cmd = sprintf(
+            "docker exec -i %s sh -c %s",
+            escapeshellarg($containerName),
+            escapeshellarg(self::wgQuickEnvPrefix() . 'wg-quick up ' . $configPath . ' 2>&1')
+        );
+        $out = self::executeServerCommand($serverData, $cmd, true);
+        if (stripos($out, 'Configuration parsing error') !== false) {
+            throw new Exception('wg-quick failed to parse wg0.conf: ' . trim($out));
+        }
     }
     
     /**
@@ -257,20 +472,33 @@ class VpnClient {
             $table = [];
         }
         
-        // Add new client
-        $table[] = [
-            'clientId' => $publicKey,
-            'userData' => [
-                'clientName' => $name,
-                'creationDate' => date('D M j H:i:s Y')
-            ]
-        ];
+        // Add new client if not already present (idempotent restore)
+        $alreadyExists = false;
+        foreach ($table as $entry) {
+            if (($entry['clientId'] ?? '') === $publicKey) {
+                $alreadyExists = true;
+                break;
+            }
+        }
         
-        // Save back
+        if (!$alreadyExists) {
+            $table[] = [
+                'clientId' => $publicKey,
+                'userData' => [
+                    'clientName' => $name,
+                    'creationDate' => date('D M j H:i:s Y')
+                ]
+            ];
+        }
+        
+        // Save back via stdin (safe for JSON with quotes/special chars)
         $newTableJson = json_encode($table, JSON_PRETTY_PRINT);
-        $escaped = addslashes($newTableJson);
-        $updateCmd = sprintf("docker exec -i %s sh -c 'echo \"%s\" > /opt/amnezia/awg/clientsTable'", $containerName, $escaped);
-        self::executeServerCommand($serverData, $updateCmd, true);
+        self::writeFileInContainer(
+            $serverData,
+            $containerName,
+            '/opt/amnezia/awg/clientsTable',
+            $newTableJson
+        );
     }
     
     /**
@@ -378,7 +606,7 @@ class VpnClient {
         
         if ($serverData && $serverData['status'] === 'active') {
             try {
-                self::addClientToServer($serverData, $this->data['public_key'], $this->data['client_ip']);
+                self::addClientToServer($serverData, $this->data['public_key'], $this->data['client_ip'], $this->data['name']);
             } catch (Exception $e) {
                 throw new Exception('Failed to restore client on server: ' . $e->getMessage());
             }
@@ -439,12 +667,7 @@ class VpnClient {
             $newConfig
         );
 
-        $syncCmd = sprintf(
-            "docker exec -i %s bash -lc %s",
-            $containerName,
-            escapeshellarg("wg syncconf wg0 <(wg-quick strip /opt/amnezia/awg/wg0.conf)")
-        );
-        self::executeServerCommand($serverData, $syncCmd, true);
+        self::applyWgSyncconf($serverData);
         
         // ПРИМЕЧАНИЕ. НЕ запускайте здесь wg-quick save! Он перезаписывает wg0.conf стандартным
         // Формат WireGuard и параметры Amnezia AWG (Jc, Jmin, Jmax, S1, S2, H1-H4),
@@ -532,10 +755,29 @@ class VpnClient {
     }
 
     /**
+     * wg0.conf must begin with [Interface]; catches broken echo/shell writes.
+     */
+    public static function assertValidWgConfigContent(string $content): void
+    {
+        $trimmed = ltrim($content);
+        if ($trimmed === '' || !str_starts_with($trimmed, '[Interface]')) {
+            throw new Exception('Invalid wg0.conf: expected [Interface] section at file start');
+        }
+    }
+
+    /**
+     * Verify wg0.conf on the remote AWG container parses as WireGuard config.
+     */
+    public static function assertValidWgConfigOnServer(array $serverData): void
+    {
+        self::assertValidWgConfigContent(self::readWgConfigFromServer($serverData));
+    }
+
+    /**
      * Записывает файл внутрь контейнера AWG потоком (stdin).
      * Так мы не портим большие файлы из-за кавычек/экранирования и лимитов длины команды.
      */
-    private static function writeFileInContainer(array $serverData, string $containerName, string $path, string $content): void
+    public static function writeFileInContainer(array $serverData, string $containerName, string $path, string $content): void
     {
         // Добавляем перевод строки в конец (для файлов, которые пишем через cat)
         if ($content !== '' && !str_ends_with($content, "\n")) {
