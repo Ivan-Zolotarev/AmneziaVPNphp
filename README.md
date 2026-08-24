@@ -25,6 +25,28 @@
 
 ### Установка
 
+На **новом** Ubuntu/Debian VPS (Docker уже установлен или будет нужен):
+
+```bash
+git clone https://github.com/Ivan-Zolotarev/AmneziaVPNphp.git /opt/AmneziaVPNphp
+cd /opt/AmneziaVPNphp
+chmod +x install.sh nginx/docker-entrypoint.sh update.sh
+chmod +x scripts/ensure_awg_nat.sh scripts/install_awg_nat_cron.sh 2>/dev/null || true
+./install.sh
+```
+
+Скрипт создаст `.env`, подставит публичный IP в `PANEL_IP`, соберёт контейнеры, дождётся MySQL и выполнит `composer install`.
+
+**Повтор после неудачной первой попытки:** MySQL мог оставить битый том. Если данных панели ещё нет:
+
+```bash
+cd /opt/AmneziaVPNphp
+docker compose down -v
+./install.sh
+```
+
+Вручную (без `install.sh`):
+
 ```bash
 git clone https://github.com/Ivan-Zolotarev/AmneziaVPNphp.git
 cd AmneziaVPNphp          # или, например: /opt/AmneziaVPNphp
@@ -33,7 +55,7 @@ chmod +x nginx/docker-entrypoint.sh update.sh
 chmod +x scripts/ensure_awg_nat.sh scripts/install_awg_nat_cron.sh 2>/dev/null || true
 
 # Docker Compose V2 (рекомендуется)
-docker compose up -d
+docker compose up -d --build
 docker compose exec web composer install
 
 # Каталог для JSON-бэкапов серверов (панель)
@@ -43,7 +65,7 @@ chmod 775 storage/server-backups
 sudo chown 33:33 storage/server-backups 2>/dev/null || true
 
 # Старый Docker Compose V1
-docker-compose up -d
+docker-compose up -d --build
 docker-compose exec web composer install
 ```
 

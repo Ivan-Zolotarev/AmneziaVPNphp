@@ -1,7 +1,5 @@
--- Migration: Add LDAP configuration and settings
--- Date: 2025-11-10
+-- Migration: Add LDAP configuration and settings (idempotent)
 
--- LDAP configuration table
 CREATE TABLE IF NOT EXISTS ldap_configs (
     id INT PRIMARY KEY AUTO_INCREMENT,
     enabled BOOLEAN DEFAULT FALSE,
@@ -18,7 +16,6 @@ CREATE TABLE IF NOT EXISTS ldap_configs (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- LDAP group to role mappings
 CREATE TABLE IF NOT EXISTS ldap_group_mappings (
     id INT PRIMARY KEY AUTO_INCREMENT,
     ldap_group VARCHAR(255) NOT NULL UNIQUE,
@@ -27,12 +24,20 @@ CREATE TABLE IF NOT EXISTS ldap_group_mappings (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Add ldap_sync flag to users table
-ALTER TABLE users 
-ADD COLUMN ldap_synced BOOLEAN DEFAULT FALSE AFTER status,
-ADD COLUMN ldap_dn VARCHAR(255) NULL AFTER ldap_synced,
-ADD INDEX idx_ldap_dn (ldap_dn);
+SET @col_exists := (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'users'
+    AND COLUMN_NAME = 'ldap_synced'
+);
+SET @sql := IF(
+  @col_exists = 0,
+  'ALTER TABLE users ADD COLUMN ldap_synced BOOLEAN DEFAULT FALSE AFTER status, ADD COLUMN ldap_dn VARCHAR(255) NULL AFTER ldap_synced, ADD INDEX idx_ldap_dn (ldap_dn)',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
--- Insert default LDAP configuration (disabled by default)
-INSERT IGNORE INTO ldap_configs (id, enabled, host, port, base_dn, bind_dn, bind_password) 
+INSERT IGNORE INTO ldap_configs (id, enabled, host, port, base_dn, bind_dn, bind_password)
 VALUES (1, FALSE, 'ldap.example.com', 389, 'dc=example,dc=com', 'cn=admin,dc=example,dc=com', '');
