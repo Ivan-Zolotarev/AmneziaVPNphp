@@ -109,11 +109,15 @@ ensure_selfsigned_cert() {
     key_file="${SELF_SIGNED_DIR}/privkey.pem"
 
     if [ -f "$cert_file" ] && [ -f "$key_file" ]; then
-        if openssl x509 -in "$cert_file" -noout -checkend 86400 >/dev/null 2>&1; then
+        cert_ok=1
+        openssl x509 -in "$cert_file" -noout -checkend 86400 >/dev/null 2>&1 || cert_ok=0
+        san_ok=0
+        openssl x509 -in "$cert_file" -noout -ext subjectAltName 2>/dev/null | grep -q "IP Address:${PANEL_IP}" && san_ok=1
+        if [ "$cert_ok" -eq 1 ] && [ "$san_ok" -eq 1 ]; then
             echo "[nginx] Самоподписанный сертификат для ${PANEL_IP} найден."
             return 0
         fi
-        echo "[nginx] Самоподписанный сертификат истекает — перевыпуск..."
+        echo "[nginx] Самоподписанный сертификат не подходит (срок или другой IP) — перевыпуск для ${PANEL_IP}..."
     else
         echo "[nginx] Генерация самоподписанного сертификата для IP ${PANEL_IP}..."
     fi
