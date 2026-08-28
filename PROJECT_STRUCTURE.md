@@ -41,8 +41,8 @@ amnezia-web-panel/
 │       ├── Auth.php                # Авторизация, сессии, роли
 │       ├── Router.php              # Простой роутер (GET/POST + плейсхолдеры)
 │       ├── View.php                # Обёртка над Twig
-│       ├── VpnServer.php           # Работа с VPN‑серверами (деплой, бэкапы)
-│       ├── VpnClient.php           # Работа с клиентами (конфиги, QR, лимиты)
+│       ├── VpnServer.php           # Деплой, бэкапы, VpnServer::updateHost()
+│       ├── VpnClient.php           # Конфиги, QR, rewriteEndpointForServer()
 │       ├── Translator.php          # Система переводов
 │       ├── JWT.php                 # JWT‑аутентификация для API
 │       ├── QrUtil.php              # Кодирование конфигов в формат QR Amnezia
@@ -64,6 +64,12 @@ amnezia-web-panel/
 │       │   └── monitoring.twig     # Графики и метрики сервера
 │       └── clients/
 │           └── view.twig           # Карточка клиента, конфиг и QR‑код
+│
+├── 🔧 CLI
+│   ├── bin/update_server_host.php  # Смена публичного IP сервера + Endpoint/QR клиентов
+│   ├── bin/check_expired_clients.php
+│   ├── bin/check_traffic_limits.php
+│   └── scripts/ensure_awg_nat.sh   # Восстановление MASQUERADE после reboot
 │
 └── 🧪 Тесты / утилиты
     ├── test_qr.php                 # Проверка генерации QR‑кодов
@@ -140,6 +146,21 @@ SSH на удалённый VPS:
   - Настройка iptables и NAT
     ↓
 Обновление записи в БД (status = active, vpn_port, ключи)
+```
+
+### Смена публичного IP VPN‑сервера
+
+```text
+bin/update_server_host.php <id> <новый_ip>
+    ↓
+VpnServer::updateHost()
+    ↓
+UPDATE vpn_servers.host
+    ↓
+VpnClient::rewriteEndpointForServer()
+    ↓
+В vpn_clients: Endpoint в config + новый QR
+Ключи и AWG‑параметры не меняются
 ```
 
 ### Создание клиента

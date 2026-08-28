@@ -540,6 +540,23 @@ BASH;
     public function getStatus(): string {
         return $this->data['status'] ?? 'unknown';
     }
+
+    /**
+     * Change public IP/hostname used for SSH and client Endpoint, then rewrite stored configs/QR.
+     */
+    public function updateHost(string $newHost): int {
+        $newHost = trim($newHost);
+        if ($newHost === '' || !filter_var($newHost, FILTER_VALIDATE_IP) && !preg_match('/^[a-zA-Z0-9.-]+$/', $newHost)) {
+            throw new Exception('Invalid host (use IPv4 or hostname)');
+        }
+
+        $pdo = DB::conn();
+        $stmt = $pdo->prepare('UPDATE vpn_servers SET host = ? WHERE id = ?');
+        $stmt->execute([$newHost, $this->serverId]);
+        $this->load();
+
+        return VpnClient::rewriteEndpointForServer($this->serverId);
+    }
     
     /**
      * Get all servers for a user

@@ -265,6 +265,50 @@ docker exec amnezia-awg iptables -t nat -L POSTROUTING -n -v | grep MASQUERADE
 
 Другое имя контейнера: `AWG_CONTAINER_NAME=my-awg ./scripts/install_awg_nat_cron.sh`
 
+### Смена публичного IP
+
+Ключи WireGuard и AWG‑параметры **не перегенерируют**. Меняется только адрес: у панели — HTTPS, у VPN‑сервера — `host` в БД и строка `Endpoint` в конфигах клиентов.
+
+#### IP панели (HTTPS по IP)
+
+В `.env` задайте новый адрес и пересоберите nginx (сертификат привязан к IP):
+
+```env
+PANEL_DOMAIN=
+PANEL_IP=203.0.113.5
+```
+
+```bash
+cd /opt/AmneziaVPNphp
+docker compose up -d --build nginx
+docker compose logs nginx --tail 20
+```
+
+Проверка с сервера: `curl -kI https://НОВЫЙ_IP` (запрос к `https://127.0.0.1` даёт 404 — nginx ждёт `Host` с `PANEL_IP`).
+
+#### IP VPN‑сервера (клиентский Endpoint)
+
+Поле `vpn_servers.host` используется и для **SSH** из панели, и как **Endpoint** в конфигах. Конфиг и QR пишутся в БД в момент создания клиента: правка только `host` **не** обновляет уже сохранённые файлы.
+
+Список id серверов:
+
+```bash
+docker compose exec db mysql -uroot -p"$(grep '^DB_ROOT_PASSWORD=' .env | cut -d= -f2-)" amnezia_panel \
+  -e "SELECT id, name, host, vpn_port FROM vpn_servers;"
+```
+
+Обновить IP и переписать `Endpoint` + QR у всех клиентов этого сервера:
+
+```bash
+docker compose exec web php bin/update_server_host.php 2 203.0.113.10
+```
+
+Первый аргумент — `id` сервера, второй — новый IPv4 или hostname. Пример: Германия `id=2`.
+
+Клиентам **не нужно** создавать новые профили с нуля: в Amnezia достаточно заменить IP в `Endpoint` (порт `vpn_port` тот же) или скачать конфиг из панели после скрипта.
+
+Другие серверы в таблице не трогайте. На самом VPS должен уже быть новый IP, иначе SSH и handshake не дойдут.
+
 ### Защита от брутфорса
 
 Ограничение неудачных попыток входа для **веб‑формы** (`POST /login`) и **получения JWT** (`POST /api/auth/token`).
@@ -374,6 +418,10 @@ curl http://localhost:8082/api/clients/overlimit \
 ---
 
 ## Резервные копии серверов
+
+JSON‑файлы пишутся в `storage/server-backups/` (не путать с SQL‑дампами `update.sh` в `backups/`). Каталог должен быть доступен на запись для `www-data` (uid 33).
+
+Это снимок клиентов и параметров сервера из БД панели, не snapshot VPS. Restore добавляет отсутствующих клиентов; существующие по IP не перезаписываются. Смена публичного IP — отдельная операция (`bin/update_server_host.php`), не бэкап.
 
 Через API:
 
@@ -532,6 +580,8 @@ docker compose exec web php bin/translate_all.php
 
 Или через веб‑интерфейс: **Настройки → Авто‑перевод**.
 
+Смена IP VPN‑сервера (см. раздел выше): `docker compose exec web php bin/update_server_host.php <id> <новый_ip>`.
+
 ---
 
 ## Структура проекта
@@ -555,6 +605,9 @@ inc/                  - основные классы
 templates/            - шаблоны Twig
 migrations/           - SQL‑миграции (при первом старте БД и через update.sh)
 nginx/                - reverse proxy, HTTPS, certbot
+bin/                  - cron и CLI (в т.ч. update_server_host.php)
+scripts/              - NAT AWG на хосте (ensure_awg_nat.sh)
+storage/server-backups/ - JSON‑бэкапы клиентов сервера из панели
 update.sh             - автоматическое обновление с бэкапом и миграциями
 LDAP_SETUP.md         - настройка LDAP
 ```

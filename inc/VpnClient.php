@@ -536,6 +536,49 @@ class VpnClient {
     }
     
     /**
+     * Replace Endpoint in stored client configs after the VPN server public IP changes.
+     * Keys and AWG params are left unchanged; QR codes are regenerated.
+     */
+    public static function rewriteEndpointForServer(int $serverId): int {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+        $host = $serverData['host'];
+        $port = (int)$serverData['vpn_port'];
+        if ($host === '' || $port <= 0) {
+            throw new Exception('Server host or vpn_port is missing');
+        }
+
+        $pdo = DB::conn();
+        $stmt = $pdo->prepare('SELECT id, config FROM vpn_clients WHERE server_id = ?');
+        $stmt->execute([$serverId]);
+        $clients = $stmt->fetchAll();
+
+        $updated = 0;
+        $updateStmt = $pdo->prepare('UPDATE vpn_clients SET config = ?, qr_code = ? WHERE id = ?');
+        $endpointLine = "Endpoint = {$host}:{$port}";
+
+        foreach ($clients as $client) {
+            $config = (string)$client['config'];
+            if ($config === '') {
+                continue;
+            }
+            if (preg_match('/^Endpoint\s*=\s*.+$/m', $config)) {
+                $newConfig = preg_replace('/^Endpoint\s*=\s*.+$/m', $endpointLine, $config, 1);
+            } else {
+                $newConfig = rtrim($config) . "\n{$endpointLine}\n";
+            }
+            if ($newConfig === $config) {
+                continue;
+            }
+            $qr = self::generateQRCode($newConfig);
+            $updateStmt->execute([$newConfig, $qr, $client['id']]);
+            $updated++;
+        }
+
+        return $updated;
+    }
+
+    /**
      * Generate QR code for configuration using Amnezia format
      * Uses working QrUtil from /Users/oleg/Documents/amnezia
      */

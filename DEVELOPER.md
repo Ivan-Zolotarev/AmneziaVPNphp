@@ -191,15 +191,23 @@ $data = $server->getData();
 // Deploy to remote server
 $server->deploy();
 
+// Public IP change: updates vpn_servers.host and rewrites Endpoint + QR
+$updatedClients = $server->updateHost('203.0.113.10');
+
 // List servers
 $servers = VpnServer::listAll();
 $userServers = VpnServer::listByUser($userId);
 ```
 
+CLI: `docker compose exec web php bin/update_server_host.php <server_id> <new_ip>` (см. README, «Смена публичного IP»).
+
 **VpnClient** (`inc/VpnClient.php`):
 ```php
 // Create client
 $clientId = VpnClient::create($serverId, $userId, $name);
+
+// Rewrite Endpoint in stored configs after host change (usually via VpnServer::updateHost)
+VpnClient::rewriteEndpointForServer($serverId);
 
 // Get client instance
 $client = new VpnClient($clientId);
