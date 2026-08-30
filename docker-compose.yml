@@ -1,6 +1,7 @@
 services:
   db:
     image: mysql:8.0
+    pull_policy: missing
     container_name: amnezia-panel-db
     restart: unless-stopped
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --default-authentication-plugin=mysql_native_password
@@ -24,6 +25,7 @@ services:
       retries: 10
 
   web:
+    pull_policy: missing
     build:
       context: .
       dockerfile: Dockerfile
@@ -53,6 +55,7 @@ services:
         max-file: "3"
 
   nginx:
+    pull_policy: missing
     build:
       context: ./nginx
     container_name: amnezia-panel-nginx
