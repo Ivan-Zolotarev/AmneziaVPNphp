@@ -20,7 +20,11 @@ dc() {
   elif command -v docker-compose >/dev/null 2>&1; then
     docker-compose "$@"
   else
-    err "Docker Compose не найден. Установите Docker: curl -fsSL https://get.docker.com | sh"
+    err "Docker Compose не найден (нужен плагин: docker compose, не только docker)."
+    echo "  curl -fsSL https://get.docker.com | sh"
+    echo "  или: apt-get install -y docker-compose-plugin"
+    echo "  Проверка: docker compose version"
+    echo "  README.md → «Шаг 0. Установить Docker»"
     exit 1
   fi
 }
@@ -30,9 +34,16 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
-  err "Docker не установлен."
-  echo "  curl -fsSL https://get.docker.com | sh"
-  echo "  usermod -aG docker \$USER"
+  err "Docker не установлен — панель без него не ставится и не запускается."
+  echo ""
+  echo "  Это не ошибка PHP/git. Сначала Docker (Ubuntu/Debian, от root):"
+  echo "    apt-get update && apt-get install -y ca-certificates curl git"
+  echo "    curl -fsSL https://get.docker.com | sh"
+  echo "    systemctl enable --now docker"
+  echo "    docker --version && docker compose version"
+  echo ""
+  echo "  Затем снова: ./install.sh"
+  echo "  Подробно: README.md → «Шаг 0. Установить Docker»"
   exit 1
 fi
 

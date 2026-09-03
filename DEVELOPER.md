@@ -4,7 +4,7 @@
 
 Кратко:
 
-- Для разработки можно использовать либо локальную установку PHP + MySQL, либо Docker (`docker compose up -d`).
+- Для **продакшена** панель ставится только через Docker. Без Docker Engine и `docker compose` установка не запустится — см. README, «Шаг 0. Установить Docker». Локально без Docker можно PHP + MySQL (ниже), это не способ поставить панель на VPS.
 - Входная точка — `public/index.php`, логика маршрутизации — в `inc/Router.php`, бизнес‑логика — в `inc/VpnServer.php`, `inc/VpnClient.php` и других файлах в `inc/`.
 - Шаблоны интерфейса находятся в `templates/` и рендерятся через `inc/View.php` (Twig).
 - Подключение к базе данных инкапсулировано в `inc/DB.php`.

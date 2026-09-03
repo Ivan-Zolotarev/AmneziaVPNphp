@@ -20,12 +20,62 @@
 
 ### Требования
 
-- Docker
-- Docker Compose
+Панель **работает только в Docker**. PHP, Apache и MySQL на хост ставить не нужно — без Docker команды `docker compose` / `./install.sh` завершатся ошибкой, контейнеры не появятся, сайт не откроется.
 
-### Установка
+Нужно:
 
-На **новом** Ubuntu/Debian VPS (Docker уже установлен или будет нужен):
+- Linux VPS (Ubuntu 22.04 / 24.04 или Debian 12 — проверено)
+- **Docker Engine** и **Docker Compose V2** (`docker compose`, плагин, не отдельный `docker-compose` из 2010-х)
+- Git
+- Открытые порты **80/tcp** и **443/tcp** (панель). UDP VPN открывается на **другом** VPS при деплое сервера, не путайте с панелью
+- Root или пользователь в группе `docker`
+
+### Шаг 0. Установить Docker (обязательно, не пропускайте)
+
+Проверка, установлен ли Docker:
+
+```bash
+docker --version
+docker compose version
+```
+
+Обе команды должны вывести номер версии. Если `command not found`, `docker: not found` или `unknown command: compose` — **сначала Docker**, потом клонирование репозитория.
+
+**Ubuntu / Debian (от root):**
+
+```bash
+apt-get update
+apt-get install -y ca-certificates curl git
+curl -fsSL https://get.docker.com | sh
+systemctl enable --now docker
+docker --version
+docker compose version
+```
+
+Если `docker compose version` не работает, плагин Compose не встал. Повторите официальный скрипт или:
+
+```bash
+apt-get install -y docker-compose-plugin
+docker compose version
+```
+
+Не используйте устаревший пакет `docker.io` из «дефолтного» `apt install docker` без Compose V2 — типичная причина «панель не запускается».
+
+**Пользователь не root:** после установки добавьте себя в группу и **перелогиньтесь** (иначе `permission denied` при обращении к Docker):
+
+```bash
+usermod -aG docker "$USER"
+# выйти из SSH и зайти снова, затем:
+docker ps
+```
+
+**Windows / macOS:** панель рассчитана на Linux VPS. Для разработки см. `DEVELOPER.md`. На Windows Docker Desktop должен быть запущен, в PowerShell нужна команда `docker compose` (не `docker-compose` из Chocolatey без плагина).
+
+### Установка панели
+
+Только **после** успешного `docker compose version`.
+
+На новом Ubuntu/Debian VPS:
 
 ```bash
 git clone https://github.com/Ivan-Zolotarev/AmneziaVPNphp.git /opt/AmneziaVPNphp
@@ -35,7 +85,19 @@ chmod +x scripts/ensure_awg_nat.sh scripts/install_awg_nat_cron.sh 2>/dev/null |
 ./install.sh
 ```
 
-Скрипт создаст `.env`, подставит публичный IP в `PANEL_IP`, соберёт контейнеры, дождётся MySQL и выполнит `composer install`.
+Скрипт создаст `.env`, подставит публичный IP в `PANEL_IP`, соберёт контейнеры, дождётся MySQL и выполнит `composer install`. Если Docker не найден, скрипт сразу остановится и напечатает команду установки — это не «сломанная панель», а пропущенный шаг 0.
+
+#### Панель не ставится / не запускается
+
+| Что видите | Почему | Что сделать |
+|------------|--------|-------------|
+| `Docker не установлен` / `command not found: docker` | Шаг 0 пропущен | Установить Docker (блок выше), повторить `./install.sh` |
+| `unknown command: compose` / `docker-compose: not found` | Нет Compose V2 | `apt-get install -y docker-compose-plugin` или снова `get.docker.com` |
+| `permission denied` к `/var/run/docker.sock` | Пользователь не в группе `docker` | `usermod -aG docker $USER`, перелогиниться; либо запускать от `root` |
+| `Cannot connect to the Docker daemon` | Служба Docker не запущена | `systemctl start docker` и `systemctl enable docker` |
+| Порты 80/443 заняты | На VPS уже nginx/caddy/apache | Остановить их или сменить порты в `docker-compose.yml` |
+| Контейнеры `Restarting` / `unhealthy` | Сборка или БД не поднялись | `docker compose ps` и `docker compose logs` |
+| Сайт не открывается, Docker есть | Смотрите HTTPS ниже | `docker compose ps` — `nginx` в статусе `Up`; заходите на `https://IP`, не на `:8082` снаружи |
 
 **Повтор после неудачной первой попытки:** MySQL мог оставить битый том. Если данных панели ещё нет:
 
