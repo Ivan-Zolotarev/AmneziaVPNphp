@@ -51,6 +51,8 @@ try {
 // Initialize translator
 Translator::init();
 
+Auth::attemptRememberCookie();
+
 // Initialize template engine
 $user = Auth::user();
 $appName = Config::get('APP_NAME', 'Amnezia VPN Panel');
@@ -177,6 +179,9 @@ Router::post('/login', function () {
 
     if (Auth::login($email, $password)) {
         LoginRateLimit::clearSuccess($email);
+        if (!empty($_POST['remember_me'])) {
+            Auth::issueRememberMe((int)$_SESSION['user_id']);
+        }
         redirect('/dashboard');
     }
 

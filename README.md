@@ -138,6 +138,8 @@ docker-compose exec web composer install
 Логин по умолчанию: `admin@amnez.ia` / `admin123`  
 **Обязательно измените пароль после первого входа.**
 
+На форме входа есть **«Запомнить меня»**: сессия на этом браузере до 30 дней (токен в cookie, пароль на диск не пишется). Не включайте на чужом компьютере. Выход из панели сбрасывает токен. Срок: `LOGIN_REMEMBER_DAYS` в `.env`.
+
 ### HTTPS (nginx + Let's Encrypt)
 
 Контейнер **nginx** — reverse proxy перед PHP. Внутри него **certbot** по протоколу ACME (webroot) получает и продлевает сертификат Let's Encrypt.
@@ -257,6 +259,7 @@ JWT_SECRET=change_this_to_random_secret_key_for_production
 LOGIN_MAX_ATTEMPTS=5
 LOGIN_ATTEMPT_WINDOW_MINUTES=15
 LOGIN_LOCKOUT_MINUTES=15
+LOGIN_REMEMBER_DAYS=30
 
 # HTTPS (nginx) — см. разделы выше
 PANEL_DOMAIN=
@@ -380,6 +383,7 @@ docker compose exec web php bin/update_server_host.php 2 203.0.113.10
 | `LOGIN_MAX_ATTEMPTS` | 5 | Сколько неудачных попыток допускается |
 | `LOGIN_ATTEMPT_WINDOW_MINUTES` | 15 | Окно подсчёта попыток (минуты) |
 | `LOGIN_LOCKOUT_MINUTES` | 15 | Длительность блокировки после превышения лимита |
+| `LOGIN_REMEMBER_DAYS` | 30 | Срок «Запомнить меня» на форме входа (дни) |
 
 **Как работает:**
 

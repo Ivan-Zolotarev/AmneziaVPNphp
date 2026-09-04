@@ -55,7 +55,139 @@ class Auth {
     return true;
   }
 
-  public static function logout(): void { unset($_SESSION['user_id']); }
+  public static function rememberCookieName(): string {
+    return (getenv('SESSION_NAME') ?: 'amnezia_panel_session') . '_remember';
+  }
+
+  public static function rememberDays(): int {
+    $days = (int)(Config::get('LOGIN_REMEMBER_DAYS', 30) ?: 30);
+    return max(1, min(365, $days));
+  }
+
+  private static function rememberCookieOptions(int $expires): array {
+    $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
+    return [
+      'expires' => $expires,
+      'path' => '/',
+      'secure' => $secure,
+      'httponly' => true,
+      'samesite' => 'Lax',
+    ];
+  }
+
+  public static function issueRememberMe(int $userId): void {
+    self::clearRememberCookieToken();
+    $selector = rtrim(strtr(base64_encode(random_bytes(12)), '+/', '-_'), '=');
+    $validator = bin2hex(random_bytes(32));
+    $hash = hash('sha256', $validator);
+    $days = self::rememberDays();
+    $expiresAt = date('Y-m-d H:i:s', time() + $days * 86400);
+
+    try {
+      $pdo = DB::conn();
+      $pdo->prepare('DELETE FROM remember_tokens WHERE expires_at < NOW()')->execute();
+      $stmt = $pdo->prepare(
+        'INSERT INTO remember_tokens (user_id, selector, validator_hash, expires_at) VALUES (?, ?, ?, ?)'
+      );
+      $stmt->execute([$userId, $selector, $hash, $expiresAt]);
+    } catch (Throwable $e) {
+      error_log('Remember-me token not stored: ' . $e->getMessage());
+      return;
+    }
+
+    setcookie(
+      self::rememberCookieName(),
+      $selector . ':' . $validator,
+      self::rememberCookieOptions(time() + $days * 86400)
+    );
+
+    $params = session_get_cookie_params();
+    setcookie(session_name(), session_id(), [
+      'expires' => time() + $days * 86400,
+      'path' => $params['path'] ?: '/',
+      'secure' => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
+      'httponly' => true,
+      'samesite' => 'Lax',
+    ]);
+  }
+
+  public static function attemptRememberCookie(): void {
+    if (self::check()) {
+      return;
+    }
+    $raw = $_COOKIE[self::rememberCookieName()] ?? '';
+    if (!is_string($raw) || !str_contains($raw, ':')) {
+      return;
+    }
+    [$selector, $validator] = explode(':', $raw, 2);
+    if ($selector === '' || $validator === '' || !ctype_xdigit($validator)) {
+      self::clearRememberCookie();
+      return;
+    }
+
+    try {
+      $pdo = DB::conn();
+      $stmt = $pdo->prepare(
+        'SELECT t.id, t.user_id, t.validator_hash, u.status
+         FROM remember_tokens t
+         JOIN users u ON u.id = t.user_id
+         WHERE t.selector = ? AND t.expires_at > NOW()
+         LIMIT 1'
+      );
+      $stmt->execute([$selector]);
+      $row = $stmt->fetch();
+    } catch (Throwable $e) {
+      return;
+    }
+
+    if (!$row || ($row['status'] ?? '') !== 'active') {
+      self::clearRememberCookie();
+      return;
+    }
+    if (!hash_equals($row['validator_hash'], hash('sha256', $validator))) {
+      $pdo->prepare('DELETE FROM remember_tokens WHERE id = ?')->execute([$row['id']]);
+      self::clearRememberCookie();
+      return;
+    }
+
+    $_SESSION['user_id'] = (int)$row['user_id'];
+    $pdo->prepare('UPDATE users SET last_login_at = NOW() WHERE id = ?')->execute([$row['user_id']]);
+    $pdo->prepare('DELETE FROM remember_tokens WHERE id = ?')->execute([$row['id']]);
+    self::issueRememberMe((int)$row['user_id']);
+  }
+
+  private static function clearRememberCookieToken(): void {
+    $raw = $_COOKIE[self::rememberCookieName()] ?? '';
+    if (!is_string($raw) || !str_contains($raw, ':')) {
+      return;
+    }
+    $selector = explode(':', $raw, 2)[0];
+    try {
+      DB::conn()->prepare('DELETE FROM remember_tokens WHERE selector = ?')->execute([$selector]);
+    } catch (Throwable $e) {
+      // table may not exist yet
+    }
+  }
+
+  public static function clearRememberCookie(): void {
+    self::clearRememberCookieToken();
+    setcookie(self::rememberCookieName(), '', self::rememberCookieOptions(time() - 3600));
+    unset($_COOKIE[self::rememberCookieName()]);
+  }
+
+  public static function logout(): void {
+    $userId = $_SESSION['user_id'] ?? null;
+    self::clearRememberCookie();
+    if ($userId) {
+      try {
+        DB::conn()->prepare('DELETE FROM remember_tokens WHERE user_id = ?')->execute([(int)$userId]);
+      } catch (Throwable $e) {
+        // ignore
+      }
+    }
+    unset($_SESSION['user_id']);
+  }
+
   public static function check(): bool { return isset($_SESSION['user_id']); }
 
   public static function getUserByEmail(string $email): ?array {
