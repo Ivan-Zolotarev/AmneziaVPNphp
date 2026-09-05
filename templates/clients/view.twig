@@ -8,7 +8,7 @@
     <div class="bg-white rounded shadow p-6">
       <h3 class="font-bold mb-4">{{ t('clients.configuration') }}</h3>
       <dl class="space-y-2 mb-4">
-        <div><dt class="text-sm text-gray-600">{{ t('common.ip_address') }}</dt><dd>{{ client.client_ip }}</dd></div>
+        <div><dt class="text-sm text-gray-600">{% if is_vless %}{{ t('clients.uuid') }}{% else %}{{ t('common.ip_address') }}{% endif %}</dt><dd class="break-all">{{ client.client_ip }}</dd></div>
         <div><dt class="text-sm text-gray-600">{{ t('common.status') }}</dt>
           <dd>
             {% if client.status == 'active' %}
@@ -38,14 +38,23 @@
           </form>
         {% endif %}
       </div>
+      {% if is_vless %}
+      <div class="mt-4">
+        <label class="block text-sm text-gray-600 mb-1">vless://</label>
+        <textarea id="vlessUri" readonly class="w-full text-xs font-mono px-2 py-2 border rounded h-24">{{ client.config }}</textarea>
+        <button type="button" class="mt-2 text-sm text-purple-600" onclick="navigator.clipboard.writeText(document.getElementById('vlessUri').value).then(() => this.textContent='Copied').catch(() => prompt('vless://', document.getElementById('vlessUri').value))">{{ t('clients.copy_link') }}</button>
+      </div>
+      {% endif %}
     </div>
     
     <div class="bg-white rounded shadow p-6">
       <div class="flex justify-between items-center mb-4">
         <h3 class="font-bold">{{ t('clients.traffic_stats') }}</h3>
+        {% if not is_vless %}
         <button onclick="syncStats({{ client.id }})" class="text-purple-600 hover:text-purple-800 text-sm">
           <i class="fas fa-sync-alt"></i> Refresh
         </button>
+        {% endif %}
       </div>
       <dl class="space-y-2" id="stats">
         <div><dt class="text-sm text-gray-600">{{ t('common.uploaded') }}</dt><dd id="stat-sent">{{ (client.bytes_sent|default(0) / 1048576)|number_format(2) }} MB</dd></div>
@@ -147,7 +156,7 @@
   <div class="bg-white rounded shadow p-6 text-center">
     <h3 class="font-bold mb-4">QR Code</h3>
     <img src="{{ client.qr_code }}" alt="QR Code" class="mx-auto" style="max-width: 300px; width: 100%; height: auto;">
-    <p class="text-sm text-gray-600 mt-2">Scan with Amnezia VPN app</p>
+    <p class="text-sm text-gray-600 mt-2">{% if is_vless %}{{ t('clients.qr_vless_hint') }}{% else %}Scan with Amnezia VPN app{% endif %}</p>
   </div>
   {% endif %}
 </div>

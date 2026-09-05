@@ -4,6 +4,8 @@
  * Handles deployment and management of Amnezia VPN servers
  * Based on amnezia_deploy_v2.php
  */
+require_once __DIR__ . '/XuiClient.php';
+
 class VpnServer {
     private $serverId;
     private $data;
@@ -42,10 +44,20 @@ class VpnServer {
             }
         }
         
+        $protocol = $data['protocol'] ?? 'awg';
+        if (!in_array($protocol, ['awg', 'vless_reality'], true)) {
+            throw new Exception('Invalid protocol');
+        }
+
+        $vlessParams = $data['vless_params'] ?? null;
+        if (is_array($vlessParams)) {
+            $vlessParams = json_encode($vlessParams, JSON_UNESCAPED_SLASHES);
+        }
+
         $stmt = $pdo->prepare('
             INSERT INTO vpn_servers 
-            (user_id, name, host, port, username, password, container_name, vpn_subnet, status) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (user_id, name, host, port, username, password, container_name, protocol, panel_web_path, panel_use_https, panel_insecure_tls, vpn_subnet, vless_params, status) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ');
         
         $stmt->execute([
@@ -56,7 +68,12 @@ class VpnServer {
             $data['username'],
             $data['password'],
             $data['container_name'] ?? 'amnezia-awg',
+            $protocol,
+            $data['panel_web_path'] ?? '',
+            !empty($data['panel_use_https']) ? 1 : 0,
+            !empty($data['panel_insecure_tls']) ? 1 : 0,
             $data['vpn_subnet'] ?? '10.8.1.0/24',
+            $vlessParams,
             'deploying'
         ]);
         
@@ -75,6 +92,10 @@ class VpnServer {
         $errors = [];
         
         try {
+            if (self::isVlessServer($this->data)) {
+                return $this->deployVlessReality();
+            }
+
             // Update status to deploying
             $pdo->prepare('UPDATE vpn_servers SET status = ? WHERE id = ?')
                 ->execute(['deploying', $this->serverId]);
@@ -534,6 +555,73 @@ BASH;
         }
     }
     
+    public static function isVlessServer(?array $data): bool {
+        return ($data['protocol'] ?? 'awg') === 'vless_reality';
+    }
+
+    public function getVlessParams(): array {
+        $raw = $this->data['vless_params'] ?? null;
+        if (is_array($raw)) {
+            return $raw;
+        }
+        $decoded = json_decode((string)$raw, true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * Attach to an existing 3x-ui VLESS+Reality inbound (no Docker/AWG).
+     */
+    private function deployVlessReality(): array {
+        $pdo = DB::conn();
+        $pdo->prepare('UPDATE vpn_servers SET status = ? WHERE id = ?')
+            ->execute(['deploying', $this->serverId]);
+
+        $existing = $this->getVlessParams();
+        $xui = new XuiClient($this->data);
+        $inbound = $xui->findRealityInbound(
+            !empty($existing['inbound_id']) ? (int)$existing['inbound_id'] : null
+        );
+        $params = XuiClient::extractRealityParams($inbound);
+        $vpnPort = (int)$params['listen_port'];
+        $warnings = [];
+        if ($vpnPort !== 443) {
+            $warnings[] = 'Reality listen port is ' . $vpnPort . ', not 443. Other ports are often filtered.';
+        }
+        if (($params['short_id'] ?? '') === '') {
+            $warnings[] = 'Reality shortId is empty. Add a shortId in 3x-ui or clients may fail to connect.';
+        }
+
+        $stmt = $pdo->prepare('
+            UPDATE vpn_servers
+            SET vpn_port = ?,
+                server_public_key = ?,
+                vless_params = ?,
+                status = ?,
+                deployed_at = NOW(),
+                error_message = NULL
+            WHERE id = ?
+        ');
+        $stmt->execute([
+            $vpnPort,
+            $params['public_key'],
+            json_encode($params, JSON_UNESCAPED_SLASHES),
+            'active',
+            $this->serverId
+        ]);
+        $this->load();
+
+        return [
+            'success' => true,
+            'vpn_port' => $vpnPort,
+            'public_key' => $params['public_key'],
+            'protocol' => 'vless_reality',
+            'sni' => $params['sni'],
+            'short_id' => $params['short_id'],
+            'dest' => $params['dest'] ?? '',
+            'warnings' => $warnings,
+        ];
+    }
+
     /**
      * Get server status from database
      */
@@ -581,17 +669,17 @@ BASH;
      * Delete server
      */
     public function delete(): bool {
-        // Stop and remove container
-        try {
-            $containerName = $this->data['container_name'];
-            $this->executeCommand("docker stop {$containerName} 2>/dev/null || true", true);
-            $this->executeCommand("docker rm -fv {$containerName} 2>/dev/null || true", true);
-            $this->executeCommand("rm -rf /opt/amnezia/amnezia-awg", true);
-        } catch (Exception $e) {
-            // Ignore errors during cleanup
+        if (!self::isVlessServer($this->data)) {
+            try {
+                $containerName = $this->data['container_name'];
+                $this->executeCommand("docker stop {$containerName} 2>/dev/null || true", true);
+                $this->executeCommand("docker rm -fv {$containerName} 2>/dev/null || true", true);
+                $this->executeCommand("rm -rf /opt/amnezia/amnezia-awg", true);
+            } catch (Exception $e) {
+                // Ignore errors during cleanup
+            }
         }
-        
-        // Delete from database
+
         $pdo = DB::conn();
         $stmt = $pdo->prepare('DELETE FROM vpn_servers WHERE id = ?');
         return $stmt->execute([$this->serverId]);
@@ -674,6 +762,9 @@ BASH;
                     'server_public_key' => $this->data['server_public_key'],
                     'preshared_key' => $this->data['preshared_key'],
                     'awg_params' => $awgParams,
+                    'protocol' => $this->data['protocol'] ?? 'awg',
+                    'panel_web_path' => $this->data['panel_web_path'] ?? '',
+                    'vless_params' => $this->getVlessParams(),
                 ],
                 'clients' => $clients,
                 'backup_date' => date('Y-m-d H:i:s'),
@@ -843,7 +934,13 @@ BASH;
                 ]);
                 
                 // Add client to server container
-                VpnClient::addClientToServer($this->data, $clientData['public_key'], $clientData['client_ip'], $clientData['name']);
+                VpnClient::addClientToServer(
+                    $this->data,
+                    $clientData['public_key'],
+                    $clientData['client_ip'],
+                    $clientData['name'],
+                    (string)($clientData['private_key'] ?? '')
+                );
                 
                 $restored++;
                 

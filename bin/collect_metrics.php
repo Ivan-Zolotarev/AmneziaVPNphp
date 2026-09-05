@@ -49,6 +49,9 @@ while (true) {
             if ($server['status'] !== 'active') {
                 continue;
             }
+            if (VpnServer::isVlessServer($server)) {
+                continue;
+            }
             
             try {
                 echo "[" . date('Y-m-d H:i:s') . "] Collecting metrics for server #{$server['id']} ({$server['name']})\n";

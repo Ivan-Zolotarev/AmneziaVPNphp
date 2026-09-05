@@ -286,6 +286,16 @@ Router::post('/servers/create', function () {
         return;
     }
     
+    $protocol = ($_POST['protocol'] ?? 'awg') === 'vless_reality' ? 'vless_reality' : 'awg';
+    if ($protocol === 'vless_reality') {
+        if (!empty($_POST['port_xui'])) {
+            $port = (int)$_POST['port_xui'];
+        }
+        if (trim((string)($_POST['username_xui'] ?? '')) !== '') {
+            $username = trim($_POST['username_xui']);
+        }
+    }
+    
     try {
         $serverId = VpnServer::create([
             'user_id' => $user['id'],
@@ -294,10 +304,17 @@ Router::post('/servers/create', function () {
             'port' => $port,
             'username' => $username,
             'password' => $password,
+            'protocol' => $protocol,
+            'panel_web_path' => trim($_POST['panel_web_path'] ?? ''),
+            'panel_use_https' => !empty($_POST['panel_use_https']),
+            'panel_insecure_tls' => !empty($_POST['panel_insecure_tls']),
+            'vless_params' => !empty($_POST['xui_inbound_id'])
+                ? ['inbound_id' => (int)$_POST['xui_inbound_id']]
+                : null,
         ]);
         
-        // Handle import if enabled
-        if (!empty($_POST['enable_import']) && !empty($_POST['panel_type']) && isset($_FILES['backup_file'])) {
+        // Handle import if enabled (AmneziaWG only)
+        if ($protocol === 'awg' && !empty($_POST['enable_import']) && !empty($_POST['panel_type']) && isset($_FILES['backup_file'])) {
             $panelType = $_POST['panel_type'];
             
             if (in_array($panelType, ['wg-easy', '3x-ui']) && $_FILES['backup_file']['error'] === UPLOAD_ERR_OK) {
@@ -452,6 +469,13 @@ Router::get('/servers/{id}', function ($params) {
             }
         }
         
+        if (!empty($serverData['vless_params']) && is_string($serverData['vless_params'])) {
+            $decoded = json_decode($serverData['vless_params'], true);
+            if (is_array($decoded)) {
+                $serverData['vless_params'] = $decoded;
+            }
+        }
+
         View::render('servers/view.twig', [
             'server' => $serverData,
             'clients' => $clients,
@@ -591,7 +615,10 @@ Router::get('/clients/{id}', function ($params) {
             return;
         }
         
-        View::render('clients/view.twig', ['client' => $clientData]);
+        View::render('clients/view.twig', [
+            'client' => $clientData,
+            'is_vless' => str_starts_with(trim((string)($clientData['config'] ?? '')), 'vless://'),
+        ]);
     } catch (Exception $e) {
         http_response_code(404);
         echo 'Client not found';
@@ -616,15 +643,15 @@ Router::get('/clients/{id}/download', function ($params) {
         }
         
         $config = $client->getConfig();
+        $isVless = str_starts_with(trim($config), 'vless://');
         
         // Check if name contains non-Latin characters
         $hasNonLatin = preg_match('/[^a-zA-Z0-9_-]/', $clientData['name']);
+        $ext = $isVless ? '.txt' : '.conf';
         if ($hasNonLatin) {
-            // Use user_(client_id)_s(server_id).conf format for non-Latin names
-            $filename = 'user_' . $clientData['id'] . '_s' . $clientData['server_id'] . '.conf';
+            $filename = 'user_' . $clientData['id'] . '_s' . $clientData['server_id'] . $ext;
         } else {
-            // Use client name for Latin characters
-            $filename = $clientData['name'] . '.conf';
+            $filename = $clientData['name'] . $ext;
         }
         
         header('Content-Type: application/octet-stream');
@@ -929,6 +956,13 @@ Router::post('/api/servers/create', function () {
             'port' => $port,
             'username' => $username,
             'password' => $password,
+            'protocol' => ($input['protocol'] ?? 'awg') === 'vless_reality' ? 'vless_reality' : 'awg',
+            'panel_web_path' => trim((string)($input['panel_web_path'] ?? '')),
+            'panel_use_https' => !empty($input['panel_use_https']),
+            'panel_insecure_tls' => !empty($input['panel_insecure_tls']),
+            'vless_params' => !empty($input['inbound_id'])
+                ? ['inbound_id' => (int)$input['inbound_id']]
+                : null,
         ]);
         
         http_response_code(201);

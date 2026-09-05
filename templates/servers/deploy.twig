@@ -23,19 +23,33 @@ function deploy() {
   btnText.textContent = 'Deploying...';
   btnSpinner.classList.remove('hidden');
   
-  log.innerHTML = '<div>📡 Connecting to server...</div>';
-  log.innerHTML += '<div>🔧 Installing Docker...</div>';
-  log.innerHTML += '<div>📦 Building container...</div>';
-  log.innerHTML += '<div>🔐 Generating keys...</div>';
-  log.innerHTML += '<div>⚙️  Configuring WireGuard...</div>';
+  log.innerHTML = '<div>Connecting...</div>';
+  {% if server.protocol is defined and server.protocol == 'vless_reality' %}
+  log.innerHTML += '<div>Logging in to 3x-ui...</div>';
+  log.innerHTML += '<div>Reading VLESS + Reality inbound...</div>';
+  {% else %}
+  log.innerHTML += '<div>Installing Docker...</div>';
+  log.innerHTML += '<div>Building AWG container...</div>';
+  log.innerHTML += '<div>Generating keys...</div>';
+  {% endif %}
   
   fetch('/servers/{{ server.id }}/deploy', {method: 'POST'})
     .then(r => r.json())
     .then(d => {
       if (d.success) {
         log.innerHTML += '<div class="text-green-500 font-bold">✅ Deployment successful!</div>';
-        log.innerHTML += '<div class="text-yellow-300">🔌 VPN Port: ' + d.vpn_port + '</div>';
-        log.innerHTML += '<div class="text-yellow-300">🔑 Public Key: ' + d.public_key.substring(0, 40) + '...</div>';
+        log.innerHTML += '<div class="text-yellow-300">🔌 Reality port: ' + d.vpn_port + '</div>';
+        if (d.sni) {
+          log.innerHTML += '<div class="text-yellow-300">🌐 SNI: ' + d.sni + '</div>';
+        }
+        if (d.public_key) {
+          log.innerHTML += '<div class="text-yellow-300">🔑 Public Key: ' + String(d.public_key).substring(0, 40) + '...</div>';
+        }
+        if (d.warnings && d.warnings.length) {
+          d.warnings.forEach(function (w) {
+            log.innerHTML += '<div class="text-orange-400">⚠ ' + w + '</div>';
+          });
+        }
         btnText.textContent = 'Redirecting...';
         btnSpinner.classList.add('hidden');
         setTimeout(() => window.location.href = '/servers/{{ server.id }}', 2000);

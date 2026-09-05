@@ -51,6 +51,10 @@ class VpnClient {
         if (!$serverData || $serverData['status'] !== 'active') {
             throw new Exception('Server is not active');
         }
+
+        if (VpnServer::isVlessServer($serverData)) {
+            return self::createVlessClient($server, $serverData, $serverId, $userId, $name, $expiresInDays);
+        }
         
         // Generate client keys
         $containerName = $serverData['container_name'];
@@ -112,6 +116,72 @@ class VpnClient {
         
         return $clientId;
     }
+
+    /**
+     * Create a VLESS+Reality client via 3x-ui API. UUID is stored as public_key and client_ip.
+     */
+    private static function createVlessClient(
+        VpnServer $server,
+        array $serverData,
+        int $serverId,
+        int $userId,
+        string $name,
+        ?int $expiresInDays
+    ): int {
+        require_once __DIR__ . '/XuiClient.php';
+        $params = $server->getVlessParams();
+        $inboundId = (int)($params['inbound_id'] ?? 0);
+        if ($inboundId <= 0) {
+            throw new Exception('VLESS inbound is not linked. Deploy the 3x-ui server first.');
+        }
+        $flow = (string)($params['flow'] ?? 'xtls-rprx-vision');
+        $uuid = XuiClient::uuidV4();
+        $email = $name . '_' . substr(str_replace('-', '', $uuid), 0, 8);
+        $expiresAt = $expiresInDays ? date('Y-m-d H:i:s', strtotime("+{$expiresInDays} days")) : null;
+        $expiryMs = $expiresAt ? (int)(strtotime($expiresAt) * 1000) : 0;
+
+        $xui = new XuiClient($serverData);
+        $xui->addClient($inboundId, $uuid, $email, $flow, $expiryMs);
+
+        $config = XuiClient::buildVlessUri(
+            $uuid,
+            $serverData['host'],
+            (int)$serverData['vpn_port'],
+            $params,
+            $name
+        );
+        $qrCode = self::generateQRCode($config);
+
+        $pdo = DB::conn();
+        try {
+            $stmt = $pdo->prepare('
+                INSERT INTO vpn_clients
+                (server_id, user_id, name, client_ip, public_key, private_key, preshared_key, config, qr_code, status, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ');
+            $stmt->execute([
+                $serverId,
+                $userId,
+                $name,
+                $uuid,
+                $uuid,
+                $email,
+                null,
+                $config,
+                $qrCode,
+                'active',
+                $expiresAt
+            ]);
+            return (int)$pdo->lastInsertId();
+        } catch (Exception $e) {
+            try {
+                $xui->deleteClient($inboundId, $uuid);
+            } catch (Exception $ignored) {
+            }
+            throw $e;
+        }
+    }
+
     
     /**
      * Generate client keys on remote server
@@ -399,7 +469,20 @@ class VpnClient {
     /**
      * Add client to server using official method (append + wg syncconf)
      */
-    public static function addClientToServer(array $serverData, string $publicKey, string $clientIP, ?string $clientName = null): void {
+    public static function addClientToServer(array $serverData, string $publicKey, string $clientIP, ?string $clientName = null, ?string $xuiEmail = null): void {
+        if (VpnServer::isVlessServer($serverData)) {
+            require_once __DIR__ . '/XuiClient.php';
+            $server = new VpnServer((int)$serverData['id']);
+            $params = $server->getVlessParams();
+            $inboundId = (int)($params['inbound_id'] ?? 0);
+            $flow = (string)($params['flow'] ?? 'xtls-rprx-vision');
+            $email = ($xuiEmail !== null && $xuiEmail !== '')
+                ? $xuiEmail
+                : (($clientName ?? 'client') . '_' . substr(str_replace('-', '', $publicKey), 0, 8));
+            (new XuiClient($serverData))->addClient($inboundId, $publicKey, $email, $flow, 0);
+            return;
+        }
+
         $containerName = $serverData['container_name'];
         $displayName = $clientName ?? $clientIP;
         
@@ -562,7 +645,10 @@ class VpnClient {
             if ($config === '') {
                 continue;
             }
-            if (preg_match('/^Endpoint\s*=\s*.+$/m', $config)) {
+            if (str_starts_with(trim($config), 'vless://')) {
+                require_once __DIR__ . '/XuiClient.php';
+                $newConfig = XuiClient::rewriteVlessHost($config, $host, $port);
+            } elseif (preg_match('/^Endpoint\s*=\s*.+$/m', $config)) {
                 $newConfig = preg_replace('/^Endpoint\s*=\s*.+$/m', $endpointLine, $config, 1);
             } else {
                 $newConfig = rtrim($config) . "\n{$endpointLine}\n";
@@ -586,13 +672,15 @@ class VpnClient {
         require_once __DIR__ . '/QrUtil.php';
         
         try {
-            // Use old Amnezia format with Qt/QDataStream encoding
+            if (str_starts_with(trim($config), 'vless://')) {
+                return QrUtil::pngBase64(trim($config));
+            }
             $payloadOld = QrUtil::encodeOldPayloadFromConf($config);
             $dataUri = QrUtil::pngBase64($payloadOld);
             return $dataUri;
         } catch (Throwable $e) {
             error_log('Failed to generate QR code: ' . $e->getMessage());
-            return ''; // QR code generation failed, but continue
+            return '';
         }
     }
     
@@ -636,7 +724,11 @@ class VpnClient {
         
         if ($serverData && $serverData['status'] === 'active') {
             try {
-                self::removeClientFromServer($serverData, $this->data['public_key']);
+                self::removeClientFromServer(
+                    $serverData,
+                    $this->data['public_key'],
+                    (string)($this->data['private_key'] ?? '')
+                );
             } catch (Exception $e) {
                 error_log('Failed to remove client from server: ' . $e->getMessage());
             }
@@ -662,7 +754,13 @@ class VpnClient {
         
         if ($serverData && $serverData['status'] === 'active') {
             try {
-                self::addClientToServer($serverData, $this->data['public_key'], $this->data['client_ip'], $this->data['name']);
+                self::addClientToServer(
+                    $serverData,
+                    $this->data['public_key'],
+                    $this->data['client_ip'],
+                    $this->data['name'],
+                    (string)($this->data['private_key'] ?? '')
+                );
             } catch (Exception $e) {
                 throw new Exception('Failed to restore client on server: ' . $e->getMessage());
             }
@@ -696,7 +794,17 @@ class VpnClient {
     /**
      * Remove client from server WireGuard configuration
      */
-    private static function removeClientFromServer(array $serverData, string $publicKey): void {
+    private static function removeClientFromServer(array $serverData, string $publicKey, string $xuiEmail = ''): void {
+        if (VpnServer::isVlessServer($serverData)) {
+            require_once __DIR__ . '/XuiClient.php';
+            $server = new VpnServer((int)$serverData['id']);
+            $inboundId = (int)($server->getVlessParams()['inbound_id'] ?? 0);
+            if ($inboundId > 0 && $publicKey !== '') {
+                (new XuiClient($serverData))->deleteClient($inboundId, $publicKey, $xuiEmail);
+            }
+            return;
+        }
+
         $containerName = $serverData['container_name'];
         
         // First, remove using wg command (live removal)
@@ -935,6 +1043,10 @@ class VpnClient {
         $serverData = $server->getData();
         
         if (!$serverData || $serverData['status'] !== 'active') {
+            return false;
+        }
+
+        if (VpnServer::isVlessServer($serverData)) {
             return false;
         }
         

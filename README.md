@@ -1,11 +1,31 @@
-## Amnezia VPN Web Panel
+# Amnezia VPN Web Panel
 
-Веб‑панель управления VPN‑серверами Amnezia AWG (WireGuard).
+Веб‑панель для **двух** протоколов:
+
+- **AmneziaWG** — панель сама ставит контейнер по SSH.
+- **VLESS + Reality** — панель **не** ставит Xray. Она подключается к уже установленному **3x-ui** и выдаёт клиентам ссылки `vless://`.
+
+Оба типа серверов живут в одной панели и не мешают друг другу.
+
+## Содержание
+
+- [Возможности](#возможности)
+- [Требования](#требования)
+- [Шаг 0. Docker](#шаг-0-установить-docker-обязательно-не-пропускайте)
+- [Установка панели](#установка-панели)
+- [HTTPS](#https-nginx--lets-encrypt)
+- [Обновление](#обновление-на-сервере)
+- [Как пользоваться](#как-пользоваться)
+  - [AmneziaWG](#добавление-сервера-amneziawg)
+  - [VLESS + Reality](#vless--reality-3x-ui)
+- [Смена IP](#смена-публичного-ip)
+- [API](#аутентификация-api-jwt)
 
 ### Возможности
 
-- **Развёртывание VPN‑сервера по SSH**
-- **Импорт клиентов** из существующих панелей (wg-easy, 3x-ui)
+- **Развёртывание AmneziaWG по SSH**
+- **VLESS + Reality** через API уже установленного 3x-ui (QR и ссылка `vless://`)
+- **Импорт клиентов AWG** из JSON бэкапов (wg-easy, 3x-ui WireGuard export)
 - Управление клиентами с **сроками действия**
 - **Лимиты трафика** для клиентов с автоматическим отключением
 - **Резервные копии серверов** и восстановление
@@ -27,7 +47,7 @@
 - Linux VPS (Ubuntu 22.04 / 24.04 или Debian 12 — проверено)
 - **Docker Engine** и **Docker Compose V2** (`docker compose`, плагин, не отдельный `docker-compose` из 2010-х)
 - Git
-- Открытые порты **80/tcp** и **443/tcp** (панель). UDP VPN открывается на **другом** VPS при деплое сервера, не путайте с панелью
+- Открытые порты **80/tcp** и **443/tcp** для **этой** панели. UDP AmneziaWG открывается на VPN‑VPS при деплое. Для VLESS+Reality на VPN‑VPS обычно нужен **TCP 443** (inbound Reality), это не порт веб‑панели 3x-ui (часто 2053).
 - Root или пользователь в группе `docker`
 
 ### Шаг 0. Установить Docker (обязательно, не пропускайте)
@@ -287,20 +307,22 @@ cd /opt/AmneziaVPNphp
 git pull
 docker compose exec web composer install --no-interaction
 
-# Применить одну миграцию
+# Применить одну миграцию (пример)
 docker compose exec -T db mysql -uroot -p"$(grep '^DB_ROOT_PASSWORD=' .env | cut -d= -f2-)" amnezia_panel \
-  < migrations/014_add_login_rate_limit.sql
+  < migrations/016_add_vless_reality.sql
+docker compose exec -T db mysql -uroot -p"$(grep '^DB_ROOT_PASSWORD=' .env | cut -d= -f2-)" amnezia_panel \
+  < migrations/017_vless_ui_translations.sql
 
 docker compose restart web
 # Если менялись nginx/Dockerfile:
 docker compose up -d --build
 ```
 
-Проверка, что миграция применена:
+Проверка, что миграция применена (VLESS):
 
 ```bash
 docker compose exec db mysql -uroot -p"$(grep '^DB_ROOT_PASSWORD=' .env | cut -d= -f2-)" amnezia_panel \
-  -e "SHOW TABLES LIKE 'login_attempts';"
+  -e "SHOW COLUMNS FROM vpn_servers LIKE 'protocol';"
 ```
 
 ### Восстановление NAT (AWG) после перезагрузки VPS
@@ -353,7 +375,7 @@ docker compose logs nginx --tail 20
 
 #### IP VPN‑сервера (клиентский Endpoint)
 
-Поле `vpn_servers.host` используется и для **SSH** из панели, и как **Endpoint** в конфигах. Конфиг и QR пишутся в БД в момент создания клиента: правка только `host` **не** обновляет уже сохранённые файлы.
+Поле `vpn_servers.host` используется для **SSH** (AmneziaWG) или для **API 3x-ui** (VLESS) и как адрес в клиентских конфигах. Правка только `host` в SQL **не** обновляет уже сохранённые файлы и QR.
 
 Список id серверов:
 
@@ -370,9 +392,9 @@ docker compose exec web php bin/update_server_host.php 2 203.0.113.10
 
 Первый аргумент — `id` сервера, второй — новый IPv4 или hostname. Пример: Германия `id=2`.
 
-Клиентам **не нужно** создавать новые профили с нуля: в Amnezia достаточно заменить IP в `Endpoint` (порт `vpn_port` тот же) или скачать конфиг из панели после скрипта.
+Клиентам **не нужно** перевыпускать ключи: для AWG достаточно новый `Endpoint` (или скачать конфиг после скрипта). Для VLESS скрипт переписывает хост в `vless://…@хост:порт`.
 
-Другие серверы в таблице не трогайте. На самом VPS должен уже быть новый IP, иначе SSH и handshake не дойдут.
+Другие серверы в таблице не трогайте. На самом VPS должен уже быть новый IP.
 
 ### Защита от брутфорса
 
@@ -414,17 +436,51 @@ docker compose exec web php bin/update_server_host.php 2 203.0.113.10
 
 ## Как пользоваться
 
-### Добавление VPN‑сервера
+Сначала выберите протокол на форме **Серверы → Добавить сервер**. Дальше шаги разные.
 
-1. Откройте раздел **Серверы → Добавить сервер**
-2. Заполните: имя, IP хоста, SSH‑порт, логин и пароль
-3. **(Опционально) импорт из существующей панели:**
-   - Отметьте «Импортировать из существующей панели»
-   - Выберите тип панели (`wg-easy` или `3x-ui`)
+### Добавление сервера AmneziaWG
+
+1. Протокол: **AmneziaWG (деплой по SSH)**.
+2. Имя, IP хоста, SSH‑порт, логин и пароль **root/SSH** (не 3x-ui).
+3. **(Опционально) импорт из существующей панели AWG:**
+   - «Импортировать из существующей панели»
+   - Тип: `wg-easy` или `3x-ui` (это JSON с WireGuard‑клиентами, не Reality)
    - Загрузите JSON‑бэкап
-4. Нажмите **Создать сервер**
-5. Дождитесь завершения деплоя
-6. Если включён импорт, клиенты будут подтянуты автоматически
+4. **Создать сервер** → дождитесь деплоя Docker/AWG.
+5. Если включён импорт, клиенты подтянутся после деплоя.
+
+### VLESS + Reality (3x-ui)
+
+Панель **не устанавливает** 3x-ui и не открывает Reality‑порт сама. Нужен VPS, где 3x-ui уже работает и есть inbound **VLESS + Reality**.
+
+**На 3x-ui (один раз):**
+
+1. Inbound: протокол **VLESS**, security **Reality**, сеть **TCP**.
+2. Порт прослушивания **443** (другие TCP‑порты в РФ часто режут).
+3. Flow: **xtls-rprx-vision**.
+4. Задайте **dest** и **serverNames (SNI)** — сайт, который реально открывается по HTTPS из РФ. Пустой SNI панель не примет.
+5. Сгенерируйте ключи Reality и хотя бы один **shortId**.
+6. Порт **веб‑панели** 3x-ui (часто `2053`) и порт Reality (`443`) — это разные порты. В firewall должны быть открыты оба.
+
+**В этой панели:**
+
+1. **Серверы → Добавить сервер** → протокол **VLESS + Reality**.
+2. **Host** — IP или домен, где крутится 3x-ui (тот же адрес, который пойдёт в `vless://…@хост`).
+3. **Порт 3x-ui** — порт веб‑интерфейса (по умолчанию 2053), не 443 Reality.
+4. **Логин / пароль** — учётка 3x-ui, не SSH.
+5. Если панель открывается как `http://IP:2053/secret/` — в web path укажите `secret` (без слэшей).
+6. HTTPS для API включите **только если** 3x-ui реально открывается по `https://`. Типичная установка — HTTP на 2053; галочку не ставьте. Самоподписанный HTTPS — оставьте «не проверять сертификат».
+7. ID инбаунда можно не указывать: возьмётся первый VLESS+Reality.
+8. **Создать** → **Start Deployment**. Docker на этот VPS не ставится, только API. В логе должны появиться Reality port и SNI.
+
+**Клиенты:**
+
+1. На странице сервера создайте клиента.
+2. Скопируйте `vless://` или отсканируйте QR.
+3. Импорт в **Hiddify / v2rayN / Streisand / NekoBox**. Приложение **AmneziaWG сюда не подходит**.
+4. Смена публичного IP VPS: `docker compose exec web php bin/update_server_host.php <id> <новый_ip>` — перепишет хост в сохранённых ссылках.
+
+SSH для VLESS не используется. Метрики CPU/RAM и лимиты трафика AWG на таком сервере скрыты.
 
 ### Создание клиента
 
@@ -433,7 +489,9 @@ docker compose exec web php bin/update_server_host.php 2 203.0.113.10
 3. Выберите **срок действия** (опционально, по умолчанию — бессрочно)
 4. Выберите **лимит трафика** (опционально, по умолчанию — безлимит)
 5. Нажмите **Создать клиента**
-6. Скачайте конфиг или отсканируйте QR‑код в приложении Amnezia
+6. Скачайте конфиг / скопируйте `vless://` или отсканируйте QR.
+   - AmneziaWG — приложение **Amnezia**.
+   - VLESS + Reality — Hiddify, v2rayN, Streisand, NekoBox.
 
 ---
 
@@ -588,8 +646,10 @@ DELETE /api/tokens/{id}             - отозвать токен
 
 ```text
 GET    /api/servers                 - список серверов пользователя [x]
-POST   /api/servers/create          - создать сервер [x]
-        Параметры: name, host, port, username, password
+        POST   /api/servers/create          - создать сервер [x]
+        Параметры AWG: name, host, port, username, password
+        Параметры VLESS: protocol=vless_reality, name, host, port (порт 3x-ui),
+          username, password, panel_web_path, panel_use_https, panel_insecure_tls, inbound_id
 DELETE /api/servers/{id}/delete     - удалить сервер [x]
 GET    /api/servers/{id}/clients    - список клиентов на сервере [x]
 ```

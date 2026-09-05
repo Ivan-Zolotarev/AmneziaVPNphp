@@ -31,8 +31,13 @@ try {
     $before = $server->getData();
     $count = $server->updateHost($newHost);
     echo "Server #{$serverId} ({$before['name']}): {$before['host']} -> {$newHost}\n";
-    echo "Rewrote Endpoint in {$count} client config(s). Keys unchanged.\n";
-    echo "Clients must set Endpoint = {$newHost}:{$before['vpn_port']} (or re-download config).\n";
+    $after = $server->getData();
+    echo "Rewrote {$count} client config(s). Keys/UUID unchanged.\n";
+    if (VpnServer::isVlessServer($after)) {
+        echo "VLESS clients: address in vless://...@{$newHost}:{$after['vpn_port']} (re-download or scan new QR).\n";
+    } else {
+        echo "Clients must set Endpoint = {$newHost}:{$after['vpn_port']} (or re-download config).\n";
+    }
 } catch (Throwable $e) {
     fwrite(STDERR, 'Error: ' . $e->getMessage() . "\n");
     exit(1);
