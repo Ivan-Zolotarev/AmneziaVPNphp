@@ -857,10 +857,112 @@ BASH;
     }
     
     /**
+     * Restore clients from a panel JSON backup onto this (already deployed) server.
+     * Client keys/IPs are kept; Endpoint, server public key, PSK and AWG params
+     * are taken from the target server so Germany→France (or any host change) works.
+     *
+     * @return array{success:bool,restored:int,skipped:int,failed:int,total:int,errors:array,message:string}
+     */
+    public function restoreBackupFromFile(string $backupPath, bool $activate = true): array {
+        if (!$this->data) {
+            throw new Exception('Server not loaded');
+        }
+        if ($this->data['status'] !== 'active') {
+            throw new Exception('Server must be active to restore backup');
+        }
+        if (!is_readable($backupPath)) {
+            throw new Exception('Backup file not found or not readable: ' . $backupPath);
+        }
+
+        $backupData = json_decode((string)file_get_contents($backupPath), true);
+        if (!is_array($backupData) || !isset($backupData['clients']) || !is_array($backupData['clients'])) {
+            throw new Exception('Invalid backup format (missing clients)');
+        }
+
+        $pdo = DB::conn();
+        $restored = 0;
+        $skipped = 0;
+        $failed = 0;
+        $errors = [];
+
+        foreach ($backupData['clients'] as $clientData) {
+            $name = (string)($clientData['name'] ?? 'client');
+            $clientIp = (string)($clientData['client_ip'] ?? '');
+            $publicKey = (string)($clientData['public_key'] ?? '');
+            $privateKey = (string)($clientData['private_key'] ?? '');
+            try {
+                if ($clientIp === '' || $publicKey === '' || $privateKey === '') {
+                    throw new Exception('missing ip or keys');
+                }
+
+                $stmt = $pdo->prepare('SELECT id FROM vpn_clients WHERE server_id = ? AND (client_ip = ? OR public_key = ?)');
+                $stmt->execute([$this->serverId, $clientIp, $publicKey]);
+                if ($stmt->fetch()) {
+                    $errors[] = "Skip {$name}: already on this server";
+                    $skipped++;
+                    continue;
+                }
+
+                [$config, $qr] = VpnClient::buildConfigAndQr($this->data, $privateKey, $clientIp);
+                $status = $activate ? 'active' : 'disabled';
+
+                $stmt = $pdo->prepare('
+                    INSERT INTO vpn_clients
+                    (server_id, user_id, name, client_ip, public_key, private_key, preshared_key,
+                     config, qr_code, status, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ');
+                $stmt->execute([
+                    $this->serverId,
+                    $this->data['user_id'],
+                    $name,
+                    $clientIp,
+                    $publicKey,
+                    $privateKey,
+                    $this->data['preshared_key'],
+                    $config,
+                    $qr,
+                    $status,
+                    $clientData['expires_at'] ?? null,
+                ]);
+                $clientId = (int)$pdo->lastInsertId();
+
+                try {
+                    VpnClient::addClientToServer(
+                        $this->data,
+                        $publicKey,
+                        $clientIp,
+                        $name,
+                        $privateKey
+                    );
+                } catch (Exception $e) {
+                    $pdo->prepare('DELETE FROM vpn_clients WHERE id = ?')->execute([$clientId]);
+                    throw $e;
+                }
+
+                $restored++;
+            } catch (Exception $e) {
+                $failed++;
+                $errors[] = "Failed {$name}: " . $e->getMessage();
+            }
+        }
+
+        return [
+            'success' => true,
+            'restored' => $restored,
+            'skipped' => $skipped,
+            'failed' => $failed,
+            'total' => count($backupData['clients']),
+            'errors' => $errors,
+            'message' => "Restored {$restored}, skipped {$skipped}, failed {$failed}",
+        ];
+    }
+
+    /**
      * Restore server from backup
      * Note: This only restores client configurations to database
      * Server must already be deployed
-     * 
+     *
      * @param int $backupId Backup ID
      * @return array Restoration results
      */
@@ -868,96 +970,18 @@ BASH;
         if (!$this->data) {
             throw new Exception('Server not loaded');
         }
-        
-        if ($this->data['status'] !== 'active') {
-            throw new Exception('Server must be active to restore backup');
-        }
-        
+
         $pdo = DB::conn();
-        
-        // Get backup record
+
         $stmt = $pdo->prepare('SELECT * FROM server_backups WHERE id = ? AND server_id = ?');
         $stmt->execute([$backupId, $this->serverId]);
         $backup = $stmt->fetch();
-        
+
         if (!$backup) {
-            throw new Exception('Backup not found');
+            throw new Exception('Backup not found for this server (cannot restore Germany backup onto France from the UI — use bin/restore_backup_to_server.php)');
         }
-        
-        if (!file_exists($backup['backup_path'])) {
-            throw new Exception('Backup file not found');
-        }
-        
-        // Read backup data
-        $backupData = json_decode(file_get_contents($backup['backup_path']), true);
-        
-        if (!$backupData || !isset($backupData['clients'])) {
-            throw new Exception('Invalid backup format');
-        }
-        
-        $restored = 0;
-        $failed = 0;
-        $errors = [];
-        
-        foreach ($backupData['clients'] as $clientData) {
-            try {
-                // Check if client already exists by IP
-                $stmt = $pdo->prepare('SELECT id FROM vpn_clients WHERE server_id = ? AND client_ip = ?');
-                $stmt->execute([$this->serverId, $clientData['client_ip']]);
-                $existing = $stmt->fetch();
-                
-                if ($existing) {
-                    $errors[] = "Client {$clientData['name']} already exists";
-                    $failed++;
-                    continue;
-                }
-                
-                // Insert client
-                $stmt = $pdo->prepare('
-                    INSERT INTO vpn_clients 
-                    (server_id, user_id, name, client_ip, public_key, private_key, preshared_key, 
-                     config, status, expires_at) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ');
-                
-                $stmt->execute([
-                    $this->serverId,
-                    $this->data['user_id'],
-                    $clientData['name'],
-                    $clientData['client_ip'],
-                    $clientData['public_key'],
-                    $clientData['private_key'],
-                    $clientData['preshared_key'],
-                    $clientData['config'],
-                    'disabled', // Restore as disabled for safety
-                    $clientData['expires_at']
-                ]);
-                
-                // Add client to server container
-                VpnClient::addClientToServer(
-                    $this->data,
-                    $clientData['public_key'],
-                    $clientData['client_ip'],
-                    $clientData['name'],
-                    (string)($clientData['private_key'] ?? '')
-                );
-                
-                $restored++;
-                
-            } catch (Exception $e) {
-                $failed++;
-                $errors[] = "Failed to restore {$clientData['name']}: " . $e->getMessage();
-            }
-        }
-        
-        return [
-            'success' => true, // Always success if process completed
-            'restored' => $restored,
-            'failed' => $failed,
-            'total' => count($backupData['clients']),
-            'errors' => $errors,
-            'message' => $restored > 0 ? "Restored $restored clients" : "No clients restored"
-        ];
+
+        return $this->restoreBackupFromFile((string)$backup['backup_path'], true);
     }
     
     /**

@@ -465,6 +465,31 @@ class VpnClient {
         
         return $config;
     }
+
+    /**
+     * Client .conf + QR for the given server (current host, port, PSK, AWG junk).
+     *
+     * @return array{0: string, 1: string} config, qr data URI
+     */
+    public static function buildConfigAndQr(array $serverData, string $privateKey, string $clientIp): array {
+        $awgParams = $serverData['awg_params'] ?? [];
+        if (is_string($awgParams)) {
+            $awgParams = json_decode($awgParams, true) ?: [];
+        }
+        if (!is_array($awgParams)) {
+            $awgParams = [];
+        }
+        $config = self::buildClientConfig(
+            $privateKey,
+            $clientIp,
+            (string)$serverData['server_public_key'],
+            (string)$serverData['preshared_key'],
+            (string)$serverData['host'],
+            (int)$serverData['vpn_port'],
+            $awgParams
+        );
+        return [$config, self::generateQRCode($config)];
+    }
     
     /**
      * Add client to server using official method (append + wg syncconf)
