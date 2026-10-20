@@ -950,7 +950,10 @@ class VpnClient {
     {
         $trimmed = ltrim(self::stripToInterfaceSection($content));
         if ($trimmed === '' || !str_starts_with($trimmed, '[Interface]')) {
-            throw new Exception('Invalid wg0.conf: expected [Interface] section at file start');
+            throw new Exception(
+                'Invalid wg0.conf: expected [Interface] section at file start (got: '
+                . ($trimmed === '' ? 'empty output' : substr($trimmed, 0, 300)) . ')'
+            );
         }
     }
 
