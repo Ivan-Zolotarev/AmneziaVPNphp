@@ -279,8 +279,8 @@ ENTRYPOINT [ "dumb-init", "/opt/amnezia/start.sh" ]
 CMD [ "" ]
 DOCKERFILE;
         
-        $escaped = addslashes(trim($dockerfile));
-        $this->executeCommand("echo \"{$escaped}\" > /opt/amnezia/amnezia-awg/Dockerfile", true);
+        $b64 = base64_encode(trim($dockerfile) . "\n");
+        $this->executeCommand("echo " . escapeshellarg($b64) . " | base64 -d > /opt/amnezia/amnezia-awg/Dockerfile", true);
     }
     
     /**
@@ -417,8 +417,9 @@ fi
 tail -f /dev/null
 BASH;
         
-        $escaped = addslashes(trim($script));
-        $this->executeCommand("echo \"{$escaped}\" > /opt/amnezia/amnezia-awg/start.sh", true);
+        // base64: the script contains $vars and $(...) that the remote shell would expand inside echo "..."
+        $b64 = base64_encode(trim($script) . "\n");
+        $this->executeCommand("echo " . escapeshellarg($b64) . " | base64 -d > /opt/amnezia/amnezia-awg/start.sh", true);
         $this->executeCommand("chmod +x /opt/amnezia/amnezia-awg/start.sh", true);
     }
     
