@@ -346,6 +346,23 @@ DOCKERFILE;
 
 echo "Container startup"
 
+# Hosts with a modern kernel (nf_tables only) cannot load ip_tables for iptables-legacy.
+# Pick the backend that works; the image ships both xtables-legacy-multi and xtables-nft-multi.
+select_iptables_backend() {
+    for backend in legacy nft; do
+        if "iptables-$backend" -t nat -L POSTROUTING -n >/dev/null 2>&1; then
+            for tool in iptables iptables-save iptables-restore; do
+                ln -sf "/sbin/xtables-$backend-multi" "/sbin/$tool"
+            done
+            echo "iptables backend: $backend"
+            return 0
+        fi
+    done
+    echo "No working iptables backend" >&2
+    return 1
+}
+select_iptables_backend || true
+
 apply_nat_rules() {
     echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
 
