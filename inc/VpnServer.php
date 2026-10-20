@@ -404,12 +404,13 @@ fi
 # PostUp in wg0.conf also applies NAT; apply_nat_rules is a second pass after wg-quick up
 if [ -f /opt/amnezia/awg/wg0.conf ]; then
     wg-quick down /opt/amnezia/awg/wg0.conf 2>/dev/null || true
-    if ! wg-quick up /opt/amnezia/awg/wg0.conf; then
+    # Do not exit on failure: --restart always would crash-loop the container and hide the cause
+    if wg-quick up /opt/amnezia/awg/wg0.conf; then
+        echo "WireGuard started"
+        apply_nat_rules || echo "NAT apply failed on startup" >&2
+    else
         echo "WireGuard failed to start" >&2
-        exit 1
     fi
-    echo "WireGuard started"
-    apply_nat_rules || echo "NAT apply failed on startup" >&2
 else
     echo "No wg0.conf found, skipping WireGuard startup"
 fi
@@ -449,7 +450,7 @@ BASH;
         $containerName = $this->data['container_name'];
         
         $runCmd = sprintf(
-            'docker run -d --log-driver none --restart always --privileged --cap-add=NET_ADMIN --cap-add=SYS_MODULE --device /dev/net/tun --sysctl net.ipv4.ip_forward=1 -p %d:%d/udp -v /lib/modules:/lib/modules --name %s %s',
+            'docker run -d --log-driver json-file --log-opt max-size=5m --log-opt max-file=2 --restart always --privileged --cap-add=NET_ADMIN --cap-add=SYS_MODULE --device /dev/net/tun --sysctl net.ipv4.ip_forward=1 -p %d:%d/udp -v /lib/modules:/lib/modules --name %s %s',
             $vpnPort,
             $vpnPort,
             $containerName,
