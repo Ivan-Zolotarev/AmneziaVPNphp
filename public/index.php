@@ -22,6 +22,7 @@ require_once __DIR__ . '/../inc/Router.php';
 require_once __DIR__ . '/../inc/View.php';
 require_once __DIR__ . '/../inc/VpnServer.php';
 require_once __DIR__ . '/../inc/VpnClient.php';
+require_once __DIR__ . '/../inc/ClientGroup.php';
 require_once __DIR__ . '/../inc/Translator.php';
 require_once __DIR__ . '/../inc/JWT.php';
 require_once __DIR__ . '/../inc/PanelImporter.php';
@@ -476,10 +477,19 @@ Router::get('/servers/{id}', function ($params) {
             }
         }
 
+        $groups = ClientGroup::options($user);
+        $groupMap = [];
+        foreach ($groups as $g) {
+            $groupMap[$g['id']] = $g;
+        }
+
         View::render('servers/view.twig', [
             'server' => $serverData,
             'clients' => $clients,
             'import_message' => $importMessage,
+            'groups' => $groups,
+            'group_map' => $groupMap,
+            'error' => $_GET['error'] ?? null,
         ]);
     } catch (Exception $e) {
         error_log('Server view error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
@@ -584,8 +594,24 @@ Router::post('/servers/{id}/clients/create', function ($params) {
             return;
         }
         
+        // Optional group: validate before creating anything on the server
+        $groupId = ($_POST['group_id'] ?? '') === '' ? null : (int)$_POST['group_id'];
+        if ($groupId !== null) {
+            $group = ClientGroup::get($groupId);
+            if (!$group || !ClientGroup::canAccess($group, $user)) {
+                throw new Exception('Group not found');
+            }
+            if ($group['status'] === 'disabled') {
+                throw new Exception('Group is disabled: enable it before adding configs');
+            }
+        }
+
         $clientId = VpnClient::create($serverId, $user['id'], $clientName, $expiresInDays);
-        
+
+        if ($groupId !== null) {
+            ClientGroup::assignClient($clientId, $groupId, $user);
+        }
+
         // Set traffic limit if specified
         if ($trafficLimitBytes !== null && $trafficLimitBytes > 0) {
             $client = new VpnClient($clientId);
@@ -662,6 +688,209 @@ Router::get('/clients/{id}/download', function ($params) {
         http_response_code(404);
         echo 'Client not found';
     }
+});
+
+// ---- Client groups ----
+
+// Load a group and make sure the current user may manage it (owner or admin)
+function loadAccessibleGroup(int $groupId, array $user): ?array {
+    $group = ClientGroup::get($groupId);
+    if (!$group) {
+        http_response_code(404);
+        echo 'Group not found';
+        return null;
+    }
+    if (!ClientGroup::canAccess($group, $user)) {
+        http_response_code(403);
+        echo 'Forbidden';
+        return null;
+    }
+    return $group;
+}
+
+// Local-path-only redirect target (no open redirect)
+function localReturnPath(?string $path, string $default): string {
+    if ($path !== null && $path !== '' && $path[0] === '/' && !str_starts_with($path, '//') && !str_contains($path, '\\')) {
+        return $path;
+    }
+    return $default;
+}
+
+Router::get('/groups', function () {
+    requireAuth();
+    $user = Auth::user();
+
+    View::render('groups/index.twig', [
+        'groups' => ClientGroup::listForUser($user),
+        'success' => $_GET['success'] ?? null,
+        'error' => $_GET['error'] ?? null,
+    ]);
+});
+
+Router::post('/groups/create', function () {
+    requireAuth();
+    $user = Auth::user();
+
+    try {
+        $groupId = ClientGroup::create($user['id'], (string)($_POST['name'] ?? ''), $_POST['comment'] ?? null);
+        redirect('/groups/' . $groupId);
+    } catch (Exception $e) {
+        redirect('/groups?error=' . urlencode($e->getMessage()));
+    }
+});
+
+Router::get('/groups/{id}', function ($params) {
+    requireAuth();
+    $user = Auth::user();
+    $group = loadAccessibleGroup((int)$params['id'], $user);
+    if (!$group) return;
+
+    View::render('groups/view.twig', [
+        'group' => $group,
+        'members' => ClientGroup::members((int)$group['id']),
+        'ungrouped' => ClientGroup::ungroupedClients($user),
+        'success' => $_GET['success'] ?? null,
+        'error' => $_GET['error'] ?? null,
+    ]);
+});
+
+Router::post('/groups/{id}/update', function ($params) {
+    requireAuth();
+    $user = Auth::user();
+    $group = loadAccessibleGroup((int)$params['id'], $user);
+    if (!$group) return;
+
+    try {
+        ClientGroup::update((int)$group['id'], (string)($_POST['name'] ?? ''), $_POST['comment'] ?? null);
+        redirect('/groups/' . $group['id'] . '?success=' . urlencode('Saved'));
+    } catch (Exception $e) {
+        redirect('/groups/' . $group['id'] . '?error=' . urlencode($e->getMessage()));
+    }
+});
+
+Router::post('/groups/{id}/disable', function ($params) {
+    requireAuth();
+    $user = Auth::user();
+    $group = loadAccessibleGroup((int)$params['id'], $user);
+    if (!$group) return;
+
+    $result = ClientGroup::disable((int)$group['id']);
+    if ($result['failed']) {
+        redirect('/groups/' . $group['id'] . '?error=' . urlencode(
+            'Disabled ' . $result['disabled'] . ', failed: ' . implode('; ', $result['failed'])
+        ));
+    }
+    redirect('/groups/' . $group['id'] . '?success=' . urlencode('Group disabled, configs cut off: ' . $result['disabled']));
+});
+
+Router::post('/groups/{id}/enable', function ($params) {
+    requireAuth();
+    $user = Auth::user();
+    $group = loadAccessibleGroup((int)$params['id'], $user);
+    if (!$group) return;
+
+    $result = ClientGroup::enable((int)$group['id']);
+    if ($result['failed']) {
+        redirect('/groups/' . $group['id'] . '?error=' . urlencode(
+            'Restored ' . $result['restored'] . ', failed: ' . implode('; ', $result['failed'])
+        ));
+    }
+    redirect('/groups/' . $group['id'] . '?success=' . urlencode('Group enabled, configs restored: ' . $result['restored']));
+});
+
+Router::post('/groups/{id}/delete', function ($params) {
+    requireAuth();
+    $user = Auth::user();
+    $group = loadAccessibleGroup((int)$params['id'], $user);
+    if (!$group) return;
+
+    ClientGroup::delete((int)$group['id']);
+    redirect('/groups?success=' . urlencode('Group deleted'));
+});
+
+// Add an existing config to the group
+Router::post('/groups/{id}/members/add', function ($params) {
+    requireAuth();
+    $user = Auth::user();
+    $group = loadAccessibleGroup((int)$params['id'], $user);
+    if (!$group) return;
+
+    try {
+        ClientGroup::assignClient((int)($_POST['client_id'] ?? 0), (int)$group['id'], $user);
+        redirect('/groups/' . $group['id']);
+    } catch (Exception $e) {
+        redirect('/groups/' . $group['id'] . '?error=' . urlencode($e->getMessage()));
+    }
+});
+
+// Move a config into a group, or out (empty group_id)
+Router::post('/clients/{id}/group', function ($params) {
+    requireAuth();
+    $user = Auth::user();
+    $clientId = (int)$params['id'];
+    $groupId = ($_POST['group_id'] ?? '') === '' ? null : (int)$_POST['group_id'];
+
+    try {
+        $clientData = (new VpnClient($clientId))->getData();
+        $back = localReturnPath($_POST['return_to'] ?? null, '/servers/' . $clientData['server_id']);
+        ClientGroup::assignClient($clientId, $groupId, $user);
+        redirect($back);
+    } catch (Exception $e) {
+        $back = localReturnPath($_POST['return_to'] ?? null, '/dashboard');
+        redirect($back . (str_contains($back, '?') ? '&' : '?') . 'error=' . urlencode($e->getMessage()));
+    }
+});
+
+// API: disable the whole group (e.g. from billing on overdue subscription)
+Router::post('/api/groups/{id}/disable', function ($params) {
+    header('Content-Type: application/json');
+
+    $user = JWT::requireAuth();
+    if (!$user) return;
+
+    $group = ClientGroup::get((int)$params['id']);
+    if (!$group) {
+        http_response_code(404);
+        echo json_encode(['error' => 'Group not found']);
+        return;
+    }
+    if (!ClientGroup::canAccess($group, $user)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Forbidden']);
+        return;
+    }
+
+    $result = ClientGroup::disable((int)$group['id']);
+    if ($result['failed']) {
+        http_response_code(500);
+    }
+    echo json_encode(['success' => !$result['failed']] + $result);
+});
+
+// API: enable the group again after payment
+Router::post('/api/groups/{id}/enable', function ($params) {
+    header('Content-Type: application/json');
+
+    $user = JWT::requireAuth();
+    if (!$user) return;
+
+    $group = ClientGroup::get((int)$params['id']);
+    if (!$group) {
+        http_response_code(404);
+        echo json_encode(['error' => 'Group not found']);
+        return;
+    }
+    if (!ClientGroup::canAccess($group, $user)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Forbidden']);
+        return;
+    }
+
+    $result = ClientGroup::enable((int)$group['id']);
+    if ($result['failed']) {
+        http_response_code(500);
+    }
+    echo json_encode(['success' => !$result['failed']] + $result);
 });
 
 // Revoke client access

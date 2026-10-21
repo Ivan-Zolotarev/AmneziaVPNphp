@@ -52,7 +52,13 @@
     {{ import_message.text }}
   </div>
   {% endif %}
-  
+
+  {% if error %}
+  <div class="mb-6 bg-red-50 border-red-400 text-red-700 border px-4 py-3 rounded">
+    <i class="fas fa-exclamation-circle mr-2"></i>{{ error }}
+  </div>
+  {% endif %}
+
   <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
     <div class="bg-white rounded shadow p-6">
       <h3 class="font-bold mb-4">{{ t('servers.server_info') }}</h3>
@@ -113,6 +119,17 @@
           <input name="name" placeholder="{{ t('clients.name') }}" required class="w-full px-3 py-2 border rounded" id="clientName">
           <p class="text-xs text-gray-500 mt-1">Spaces will be replaced with underscore. All characters allowed including Cyrillic.</p>
         </div>
+        {% if groups|length > 0 %}
+        <div>
+          <label class="block text-sm text-gray-600 mb-1">{{ t('groups.group') }}</label>
+          <select name="group_id" class="w-full px-3 py-2 border rounded">
+            <option value="">{{ t('groups.no_group') }}</option>
+            {% for g in groups %}
+            <option value="{{ g.id }}" {% if g.status == 'disabled' %}disabled{% endif %}>{{ g.name }}{% if g.status == 'disabled' %} ({{ t('status.disabled') }}){% endif %}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% endif %}
         <div>
           <label class="block text-sm text-gray-600 mb-1">{{ t('clients.expiration') }}</label>
           <select name="expires_in_days" class="w-full px-3 py-2 border rounded mb-2" id="expirationSelect" onchange="toggleExpirationInput()">
@@ -182,6 +199,7 @@
       <thead class="bg-gray-50">
         <tr>
           <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.name') }}</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('groups.group') }}</th>
           <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{% if server.protocol|default('awg') == 'vless_reality' %}{{ t('clients.uuid') }}{% else %}{{ t('clients.ip') }}{% endif %}</th>
           <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.status') }}</th>
           <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.expiration') }}</th>
@@ -195,13 +213,31 @@
       <tbody>
         {% for client in clients %}
         <tr class="border-t">
+          {% set client_group = client.group_id ? group_map[client.group_id]|default(null) : null %}
           <td class="px-6 py-4">{{ client.name }}</td>
+          <td class="px-6 py-4 text-sm">
+            {% if groups|length > 0 or client_group %}
+            <form method="POST" action="/clients/{{ client.id }}/group">
+              <select name="group_id" onchange="this.form.submit()" class="px-2 py-1 border rounded text-sm">
+                <option value="">{{ t('groups.no_group') }}</option>
+                {% for g in groups %}
+                <option value="{{ g.id }}" {% if client.group_id == g.id %}selected{% endif %}>{{ g.name }}{% if g.status == 'disabled' %} ({{ t('status.disabled') }}){% endif %}</option>
+                {% endfor %}
+              </select>
+            </form>
+            {% else %}
+            <a href="/groups" class="text-gray-400 hover:text-purple-600">—</a>
+            {% endif %}
+          </td>
           <td class="px-6 py-4">{{ client.client_ip }}</td>
           <td class="px-6 py-4">
             {% if client.status == 'active' %}
               <span class="px-2 py-1 bg-green-100 text-green-800 rounded text-xs">{{ t('status.active') }}</span>
             {% else %}
               <span class="px-2 py-1 bg-red-100 text-red-800 rounded text-xs">{{ t('status.disabled') }}</span>
+              {% if client.disabled_by_group %}
+              <div class="text-xs text-gray-500 mt-1">{{ t('groups.disabled_by_group') }}</div>
+              {% endif %}
             {% endif %}
           </td>
           <td class="px-6 py-4 text-sm">
@@ -274,6 +310,8 @@
               <form method="POST" action="/clients/{{ client.id }}/revoke" style="display:inline;">
                 <button type="submit" class="text-orange-600 hover:text-orange-800 mr-2" onclick="return confirm('{{ t('clients.revoke_confirm') }}')">{{ t('clients.revoke') }}</button>
               </form>
+            {% elseif client_group and client_group.status == 'disabled' %}
+              <a href="/groups/{{ client_group.id }}" class="text-gray-500 hover:text-purple-600 mr-2" title="{{ t('groups.group_disabled') }}">{{ t('groups.group_disabled') }}</a>
             {% else %}
               <form method="POST" action="/clients/{{ client.id }}/restore" style="display:inline;">
                 <button type="submit" class="text-green-600 hover:text-green-800 mr-2">{{ t('clients.restore') }}</button>

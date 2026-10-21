@@ -1,0 +1,84 @@
+{% extends "layout.twig" %}
+{% block title %}{{ t('groups.title') }}{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+  <div class="mb-6">
+    <h1 class="text-3xl font-bold">{{ t('groups.title') }}</h1>
+    <p class="text-gray-600">{{ t('groups.hint') }}</p>
+  </div>
+
+  {% if success %}
+  <div class="mb-6 bg-green-50 border-green-400 text-green-700 border px-4 py-3 rounded">
+    <i class="fas fa-check-circle mr-2"></i>{{ success }}
+  </div>
+  {% endif %}
+  {% if error %}
+  <div class="mb-6 bg-red-50 border-red-400 text-red-700 border px-4 py-3 rounded">
+    <i class="fas fa-exclamation-circle mr-2"></i>{{ error }}
+  </div>
+  {% endif %}
+
+  <div class="bg-white rounded shadow p-6 mb-8">
+    <h3 class="font-bold mb-4">{{ t('groups.create') }}</h3>
+    <form method="POST" action="/groups/create" class="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <input name="name" placeholder="{{ t('groups.name') }}" required class="px-3 py-2 border rounded">
+      <input name="comment" placeholder="{{ t('groups.comment') }}" class="px-3 py-2 border rounded">
+      <button type="submit" class="gradient-bg text-white px-4 py-2 rounded">{{ t('groups.create') }}</button>
+    </form>
+  </div>
+
+  <div class="bg-white rounded shadow">
+    {% if groups|length > 0 %}
+    <table class="w-full">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('groups.name') }}</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('groups.configs') }}</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.status') }}</th>
+          {% if user.role == 'admin' %}
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('groups.owner') }}</th>
+          {% endif %}
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ t('clients.actions') }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for g in groups %}
+        <tr class="border-t">
+          <td class="px-6 py-4">
+            <a href="/groups/{{ g.id }}" class="text-purple-600 hover:text-purple-800 font-medium">{{ g.name }}</a>
+            {% if g.comment %}<div class="text-xs text-gray-500">{{ g.comment }}</div>{% endif %}
+          </td>
+          <td class="px-6 py-4 text-sm">{{ g.total_count }} <span class="text-gray-500">({{ g.active_count }} {{ t('groups.active_of') }})</span></td>
+          <td class="px-6 py-4">
+            {% if g.status == 'active' %}
+              <span class="px-2 py-1 bg-green-100 text-green-800 rounded text-xs">{{ t('status.active') }}</span>
+            {% else %}
+              <span class="px-2 py-1 bg-red-100 text-red-800 rounded text-xs">{{ t('status.disabled') }}</span>
+            {% endif %}
+          </td>
+          {% if user.role == 'admin' %}
+          <td class="px-6 py-4 text-sm text-gray-600">{{ g.owner_name }}</td>
+          {% endif %}
+          <td class="px-6 py-4">
+            <a href="/groups/{{ g.id }}" class="text-purple-600 hover:text-purple-800 mr-2">{{ t('servers.view') }}</a>
+            {% if g.status == 'active' %}
+            <form method="POST" action="/groups/{{ g.id }}/disable" style="display:inline;">
+              <button type="submit" class="text-orange-600 hover:text-orange-800" onclick="return confirm('{{ t('groups.disable_confirm')|e('js') }}')">{{ t('groups.disable') }}</button>
+            </form>
+            {% else %}
+            <form method="POST" action="/groups/{{ g.id }}/enable" style="display:inline;">
+              <button type="submit" class="text-green-600 hover:text-green-800">{{ t('groups.enable') }}</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="p-12 text-center text-gray-500">{{ t('groups.no_groups') }}</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

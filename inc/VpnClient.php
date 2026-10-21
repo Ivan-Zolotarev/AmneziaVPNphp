@@ -737,16 +737,19 @@ class VpnClient {
     
     /**
      * Revoke client access (disable without deleting)
+     *
+     * @param bool $byGroup Mark as disabled by a group switch-off, so enabling the group restores it
+     * @param bool $strict Rethrow when the client cannot be removed from the server (group disable must not report success then)
      */
-    public function revoke(): bool {
+    public function revoke(bool $byGroup = false, bool $strict = false): bool {
         if (!$this->data) {
             throw new Exception('Client not loaded');
         }
-        
+
         // Remove from server
         $server = new VpnServer($this->data['server_id']);
         $serverData = $server->getData();
-        
+
         if ($serverData && $serverData['status'] === 'active') {
             try {
                 self::removeClientFromServer(
@@ -756,15 +759,18 @@ class VpnClient {
                 );
             } catch (Exception $e) {
                 error_log('Failed to remove client from server: ' . $e->getMessage());
+                if ($strict) {
+                    throw $e;
+                }
             }
         }
-        
+
         // Mark as disabled in database
         $pdo = DB::conn();
-        $stmt = $pdo->prepare('UPDATE vpn_clients SET status = ? WHERE id = ?');
-        return $stmt->execute(['disabled', $this->clientId]);
+        $stmt = $pdo->prepare('UPDATE vpn_clients SET status = ?, disabled_by_group = ? WHERE id = ?');
+        return $stmt->execute(['disabled', $byGroup ? 1 : 0, $this->clientId]);
     }
-    
+
     /**
      * Restore client access
      */
@@ -772,7 +778,15 @@ class VpnClient {
         if (!$this->data) {
             throw new Exception('Client not loaded');
         }
-        
+
+        if (!empty($this->data['group_id'])) {
+            $stmt = DB::conn()->prepare('SELECT status FROM client_groups WHERE id = ?');
+            $stmt->execute([$this->data['group_id']]);
+            if ($stmt->fetchColumn() === 'disabled') {
+                throw new Exception('Group is disabled: enable the group instead of the single config');
+            }
+        }
+
         // Re-add to server
         $server = new VpnServer($this->data['server_id']);
         $serverData = $server->getData();
@@ -793,7 +807,7 @@ class VpnClient {
         
         // Mark as active in database
         $pdo = DB::conn();
-        $stmt = $pdo->prepare('UPDATE vpn_clients SET status = ? WHERE id = ?');
+        $stmt = $pdo->prepare('UPDATE vpn_clients SET status = ?, disabled_by_group = 0 WHERE id = ?');
         return $stmt->execute(['active', $this->clientId]);
     }
     
