@@ -202,6 +202,26 @@ curl -X DELETE http://localhost:8082/api/clients/1/delete \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+## Client Groups
+
+A group holds all configs of one account. Disabling the group removes all its active configs from the servers at once; enabling it restores only the configs the group itself disabled.
+
+### Disable Group (e.g. overdue subscription)
+```bash
+curl -X POST http://localhost:8082/api/groups/1/disable \
+  -H "Authorization: Bearer $TOKEN"
+# {"success":true,"disabled":3,"failed":[]}
+```
+
+### Enable Group (after payment)
+```bash
+curl -X POST http://localhost:8082/api/groups/1/enable \
+  -H "Authorization: Bearer $TOKEN"
+# {"success":true,"restored":3,"skipped":0,"failed":[]}
+```
+
+On a partial failure the response is HTTP 500 with `success: false` and the `failed` list; repeat the call to process the remaining configs.
+
 ## Integration Examples
 
 ### Python Example
